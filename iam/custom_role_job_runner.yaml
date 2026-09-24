@@ -1,0 +1,23 @@
+# Custom IAM role (project level) for the taxi pipeline service account.
+#
+# Holds ONLY the one BigQuery permission that cannot be scoped to a dataset:
+# running jobs (load jobs, queries) is billed/quota-counted at project level,
+# so `bigquery.jobs.create` must be granted on the project.
+#
+# Narrower than the predefined roles/bigquery.jobUser, which also carries
+# bigquery.config.get, resourcemanager.projects.get and
+# resourcemanager.projects.list — none of which the pipeline calls.
+#
+# All data access (read/write tables) is granted separately, on the
+# nyc_taxi dataset only — see iam_policy.yaml.
+#
+# Create with:
+#   gcloud iam roles create taxiPipelineJobRunner \
+#     --project=<PROJECT_ID> --file=iam/custom_role_job_runner.yaml
+title: Taxi Pipeline Job Runner
+description: >-
+  Run BigQuery jobs (load + query) in this project. No data access by itself;
+  data access is granted per dataset.
+stage: GA
+includedPermissions:
+  - bigquery.jobs.create

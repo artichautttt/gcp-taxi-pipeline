@@ -1,0 +1,64 @@
+# Target IAM policy for the taxi pipeline (least privilege).
+#
+# Declarative reference, not a file consumed by gcloud directly:
+# iam/iam_setup.py applies exactly these bindings (`plan` prints the
+# commands, `apply` runs them) and `audit` checks the live project against it.
+#
+# Principle: the pipeline runs as a dedicated service account that can
+#   - run BigQuery jobs in the project (nothing else at project level)
+#   - read/write tables in the nyc_taxi dataset only
+# and has NO project admin rights (no owner/editor, no IAM changes, no
+# dataset creation/deletion, no access to any other dataset).
+# No service account key is ever created: the human operator impersonates
+# the service account through ADC (short-lived tokens).
+
+project: mini-siem-taxi-pipeline
+
+service_account:
+  id: taxi-pipeline
+  email: taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+  keys: none   # impersonation only, `gcloud iam service-accounts keys create` is never used
+
+required_apis:
+  - iam.googleapis.com             # create the service account
+  - iamcredentials.googleapis.com  # short-lived tokens for impersonation
+
+custom_roles:
+  - id: taxiPipelineJobRunner
+    definition: iam/custom_role_job_runner.yaml
+    permissions: [bigquery.jobs.create]
+
+bindings:
+  # 1. Project level: run jobs only.
+  - resource: projects/mini-siem-taxi-pipeline
+    role: projects/mini-siem-taxi-pipeline/roles/taxiPipelineJobRunner
+    member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+
+  # 2. Dataset level: read/write tables of nyc_taxi only.
+  #    Most restrictive predefined role that allows load jobs with
+  #    WRITE_TRUNCATE and CREATE OR REPLACE TABLE. Stored in the dataset
+  #    access list, where BigQuery maps it to the basic "WRITER" role.
+  #    Does NOT include datasets.create/delete, datasets.setIamPolicy
+  #    or access to other datasets.
+  - resource: bigquery dataset mini-siem-taxi-pipeline:nyc_taxi
+    role: roles/bigquery.dataEditor   # shown as WRITER in the dataset ACL
+    member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+
+  # 3. On the service account itself (not on the project): lets the operator
+  #    mint short-lived tokens for it. Scoped to this single SA.
+  - resource: serviceAccount taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+    role: roles/iam.serviceAccountTokenCreator
+    member: user:<OPERATOR_EMAIL>
+
+# Permissions actually used by the pipeline, per step:
+#   ingestion/load_to_bigquery.py  jobs.create, tables.create, tables.update,
+#                                  tables.updateData, tables.get
+#   sql/01 (SELECT)                jobs.create, tables.getData
+#   sql/02, sql/03 (CREATE OR REPLACE TABLE ... AS SELECT)
+#                                  jobs.create, tables.create, tables.update,
+#                                  tables.updateData, tables.getData
+#   spark/compare_with_bigquery.py jobs.create, tables.getData
+#
+# Out of scope for the SA (kept on the project owner, one-off admin tasks):
+#   dataset creation (`bq mk`), dataset deletion (`bq rm -r`), enabling APIs,
+#   and Looker Studio, which queries BigQuery with the viewer's own credentials.

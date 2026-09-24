@@ -102,6 +102,8 @@ bq query --use_legacy_sql=false < sql/03_analytics_daily_kpis.sql
 ```
 
 Configuration : copier `.env.example` vers `.env` et ajuster `GCP_PROJECT_ID`.
+Pour exécuter le pipeline en moindre privilège (service account dédié, sans
+clé), voir [Sécurité & gouvernance des accès](#sécurité--gouvernance-des-accès).
 Le fichier `.env` et toute clé de service ne sont jamais commités (`.gitignore`).
 
 ## Dashboard Looker Studio
@@ -115,6 +117,152 @@ Le fichier `.env` et toute clé de service ne sont jamais commités (`.gitignore
 
 Looker Studio est gratuit sans limite liée à ce projet (facturé uniquement le
 volume de requêtes BigQuery sous-jacent, déjà comptabilisé ci-dessus).
+
+## Sécurité & gouvernance des accès
+
+### Analyse de risque
+
+**Données traitées.** Uniquement le dataset public [NYC TLC Yellow Taxi](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page),
+déjà anonymisé par la source : pas de nom, pas de plaque, pas de coordonnées
+GPS (les lieux sont des zones TLC `PULocationID`/`DOLocationID`). Aucune donnée
+personnelle, aucune donnée client. Une fuite des tables n'exposerait rien qui
+ne soit déjà téléchargeable publiquement.
+
+**Ce qui est réellement à protéger** : l'accès au projet GCP, pas les données.
+Si le projet était mal configuré :
+- **clé de service account commitée** sur GitHub public : n'importe qui
+  pourrait agir sur le projet avec les droits de ce compte (avec `owner` :
+  modifier l'IAM, créer des ressources, supprimer les datasets) ;
+- **identité du pipeline trop privilégiée** : un bug ou une erreur de
+  manipulation (mauvais `GCP_PROJECT_ID`, `WRITE_TRUNCATE` sur la mauvaise
+  table, `bq rm`) peut toucher tout le projet au lieu d'un seul dataset ;
+- **dataset partagé en `allAuthenticatedUsers`** : sans gravité ici (données
+  publiques), mais chaque requête d'un tiers consommerait le quota du projet.
+
+**Ce qui limite déjà le risque :**
+- **BigQuery Sandbox** : aucun compte de facturation lié
+  (`gcloud billing projects describe` → `billingEnabled: false`). Un
+  identifiant volé ne peut pas générer de coût, car les quotas gratuits sont un
+  plafond dur et non un seuil de facturation. Les tables expirent après 60 jours.
+- **ADC (Application Default Credentials)** : le code ne lit aucune clé
+  (`bigquery.Client(project=...)` seulement). Les credentials restent dans le
+  profil gcloud de l'utilisateur, hors du repo.
+- **`.gitignore`** : `.env`, `service-account-key.json` et `*.json` sont exclus.
+- **Contrôle automatisé** (`scripts/check_secrets.py`, voir plus bas) : aucune
+  credential dans les fichiers suivis ni dans l'historique git.
+
+### Audit de l'existant (2026-09-24)
+
+`python iam/iam_setup.py audit` (lecture seule) sur `mini-siem-taxi-pipeline` :
+
+```
+[audit] ADC credential    : authorized_user
+[audit] pipeline identity : user:<compte propriétaire du projet>
+[audit] project roles     : ['roles/owner']
+[audit] nyc_taxi ACL      : ['OWNER'] (+ inherited via projectOwners/projectWriters special groups)
+[audit] service accounts  : none
+[audit] FINDING: pipeline identity holds project admin role(s) ['roles/owner']: ...
+[audit] FINDING: pipeline identity is OWNER of dataset nyc_taxi: ...
+```
+
+**Constat : oui, le pipeline a plus de droits que nécessaire.** Il n'existe
+aucun service account : le pipeline tourne via ADC avec le compte utilisateur
+propriétaire du projet (`roles/owner`). Il pourrait donc modifier l'IAM,
+supprimer n'importe quel dataset ou activer n'importe quelle API, alors qu'il
+n'a besoin que de lancer des jobs BigQuery et de lire/écrire 3 tables de
+`nyc_taxi`. Par ailleurs, `.env.example` pointait
+`GOOGLE_APPLICATION_CREDENTIALS` vers un fichier de clé JSON, en contradiction
+avec l'usage ADC. Cette ligne est retirée.
+
+### Politique cible : moindre privilège
+
+Détail et justification permission par permission : [`iam/iam_policy.yaml`](iam/iam_policy.yaml).
+
+| Principal | Rôle | Portée | Pourquoi |
+|---|---|---|---|
+| SA `taxi-pipeline` | rôle custom `taxiPipelineJobRunner` : **`bigquery.jobs.create` seulement** ([`iam/custom_role_job_runner.yaml`](iam/custom_role_job_runner.yaml)) | projet | Lancer un job est la seule action BigQuery qui ne peut pas être limitée à un dataset. Plus étroit que `roles/bigquery.jobUser`. |
+| SA `taxi-pipeline` | `roles/bigquery.dataEditor` (stocké `WRITER` dans l'ACL du dataset) | dataset `nyc_taxi` **uniquement** | Chargement `WRITE_TRUNCATE` + `CREATE OR REPLACE TABLE`. Rôle prédéfini le plus restreint qui le permet. Aucun accès aux autres datasets. |
+| opérateur humain | `roles/iam.serviceAccountTokenCreator` | ce SA uniquement | Emprunter l'identité du SA (tokens courts), sans clé. |
+
+Ce que le SA **ne peut pas** faire : modifier l'IAM, créer ou supprimer un
+dataset, modifier l'ACL de `nyc_taxi`, lire un autre dataset, activer des API.
+**Aucune clé JSON n'est créée** : l'accès passe par l'impersonation, ce qui
+supprime le risque « clé commitée ».
+
+Choix assumé : la portée dataset utilise le rôle prédéfini `dataEditor`
+plutôt qu'un rôle custom, car la liste d'accès d'un dataset BigQuery (champ
+`access`, client Python, `bq update`) n'accepte que des rôles prédéfinis.
+`dataEditor` inclut aussi `tables.delete`, que le pipeline n'utilise pas :
+c'est l'écart résiduel par rapport au strict minimum.
+
+Le compte propriétaire garde `roles/owner` pour les tâches d'administration
+ponctuelles (`bq mk`, `bq rm`, activation d'API) et pour Looker Studio, qui
+interroge BigQuery avec les identifiants de la personne qui consulte le
+rapport. La différence : le pipeline ne s'exécute plus avec ces droits.
+
+### Appliquer la politique
+
+```bash
+# 1. Voir exactement ce qui sera fait (ne modifie rien)
+python iam/iam_setup.py plan --operator <votre-email>
+
+# 2. Appliquer (compte owner) : active iam + iamcredentials, crée le rôle
+#    custom et le SA, pose les 3 bindings. Ré-exécutable (skip si existant).
+python iam/iam_setup.py apply --operator <votre-email>
+
+# 3. Faire tourner le pipeline sous l'identité du SA (aucun changement de code)
+gcloud auth application-default login --impersonate-service-account=taxi-pipeline@<PROJECT_ID>.iam.gserviceaccount.com
+
+# 4. Vérifier : doit afficher "OK: pipeline identity has no admin role" (exit 0)
+python iam/iam_setup.py audit
+```
+
+Équivalent manuel : `plan` affiche les commandes `gcloud` une par une.
+Pour revenir à l'ancien mode : `gcloud auth application-default login`
+(sans `--impersonate-service-account`).
+
+**Appliqué et vérifié le 2026-09-24** sur `mini-siem-taxi-pipeline` :
+- état IAM relu après `apply` : rôle `taxiPipelineJobRunner` =
+  `[bigquery.jobs.create]` ; au niveau projet, le SA n'a que ce rôle ; ACL
+  `nyc_taxi` : `WRITER` pour le SA ; `serviceAccountTokenCreator` sur le SA
+  pour l'opérateur ; `gcloud iam service-accounts keys list --managed-by=user`
+  → 0 clé ;
+- pipeline exécuté **sous l'identité du SA** (impersonation), code inchangé :
+  chargement `yellow_tripdata_raw` (3 475 226 lignes), `sql/01`, `sql/02`
+  (`trips_clean` : 3 253 304 lignes), `sql/03` (`daily_kpis` : 33 jours), tous OK ;
+- tests négatifs sous le SA, tous refusés (`403 Forbidden`) : créer un autre
+  dataset (API et `CREATE SCHEMA`), modifier l'ACL de `nyc_taxi` ;
+- ADC basculé sur le SA, puis `python iam/iam_setup.py audit` (exit 0) :
+
+```
+[audit] ADC credential    : impersonated_service_account
+[audit] pipeline identity : serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+[audit] project roles     : ['projects/mini-siem-taxi-pipeline/roles/taxiPipelineJobRunner']
+[audit] nyc_taxi ACL      : ['WRITER'] (+ inherited via projectOwners/projectWriters special groups)
+[audit] service accounts  : ['taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com']
+[audit] OK: pipeline identity has no admin role
+```
+
+### Vérification anti-fuite de credentials
+
+`scripts/check_secrets.py` scanne les fichiers suivis ou indexés par git, et
+tout l'historique avec `--history`. Il détecte les clés JSON de service
+account, les refresh tokens ADC, les clés privées PEM et les clés API
+Google/AWS, ainsi que les fichiers interdits (`.env`,
+`service-account-key.json`, `application_default_credentials.json`). Code de
+sortie 1 si quelque chose est trouvé.
+
+```bash
+python scripts/check_secrets.py --history      # [ok] no credentials found (working tree + history)
+python -m unittest discover -s tests -v        # 9 tests, dont un qui lance le scan --history sur ce repo
+```
+
+En hook git local (bloque le commit si une credential est indexée) :
+
+```bash
+printf '#!/bin/sh\npython scripts/check_secrets.py\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
 
 ## Nettoyage (important)
 
