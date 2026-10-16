@@ -1,8 +1,32 @@
+# Secrets / credentials (never commit)
 .env
+.env.*
+!.env.example
 service-account-key.json
+application_default_credentials.json
 *.json
 !package.json
+*.pem
+*.key
+*.p12
+
+# Data and local outputs
 data/
+
+# Virtual environments
 venv/
+.venv*/
+
+# dbt artefacts
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+
+# Airflow local artefacts (if run outside Docker)
+airflow/logs/
+airflow/*.db
+airflow/*.cfg
+
 __pycache__/
 *.pyc

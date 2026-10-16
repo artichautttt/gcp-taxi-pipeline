@@ -1,8 +1,41 @@
 # GCP Taxi Pipeline
 
+> Pipeline data engineering NYC Yellow Taxi sur GCP à 0 € : ingestion Python,
+> transformations SQL BigQuery en 3 étages, tests dbt, orchestration Airflow et
+> comparaison PySpark vs BigQuery.
+
 Pipeline data engineering minimal mais réel : ingestion, chargement, transformation
 et restitution de données NYC Yellow Taxi sur Google Cloud Platform, en restant
 à **0€ de coût réel** (BigQuery Sandbox, sans compte de facturation lié).
+
+## Problème
+
+Les données brutes NYC TLC sont publiées chaque mois en Parquet, avec des
+lignes inexploitables (montants négatifs, trajets qui finissent avant de
+commencer, durées ou distances aberrantes). Le pipeline doit :
+1. vérifier que le fichier du mois est publié, puis le charger dans BigQuery ;
+2. mesurer les anomalies et produire une table propre (`trips_clean`) et des
+   agrégats journaliers (`daily_kpis`) pour un dashboard ;
+3. garantir la qualité du résultat par des tests automatisés (dbt) et
+   enchaîner le tout de façon reproductible (Airflow) ;
+4. rester à 0 € et sans clé de service account.
+
+## Résultats mesurés
+
+Mois traité : janvier 2025 (`yellow_tripdata_2025-01.parquet`). Chiffres
+relevés le 2026-10-16 lors d'une exécution complète du DAG Airflow, puis de
+`spark/spark_transform.py` et `spark/compare_with_bigquery.py` :
+
+| Mesure | Valeur |
+|---|---|
+| Lignes brutes chargées (`yellow_tripdata_raw`) | 3 475 226 |
+| Lignes conservées (`trips_clean`) | 3 253 304 |
+| Lignes écartées comme anomalies | 221 922 (6,4 % des lignes brutes) |
+| Jours dans `daily_kpis` | 33 (31/12/2024 → 01/02/2025, horodatages de bord de mois) |
+| `trips_clean` BigQuery vs PySpark | 3 253 304 lignes de part et d'autre (identique) |
+| `daily_kpis` BigQuery vs PySpark | 5/5 contrôles OK, tolérance 0,5 % (revenu total 87 219 707,12 $ des deux côtés) |
+| Tests dbt | 20/20 PASS |
+| DAG Airflow `nyc_taxi_pipeline` (`airflow dags test`) | 6/6 tâches en succès |
 
 ## Pourquoi ce dataset
 
@@ -14,21 +47,24 @@ vrai volume, assez petit pour tenir large sous les quotas gratuits.
 ## Architecture
 
 ```
+            ┌──────────── Airflow DAG nyc_taxi_pipeline (airflow/) ────────────┐
 NYC TLC (source publique, Parquet)
-        │  download_taxi_data.py (requests, streaming)
-        ▼
-   data/*.parquet (local)
-        │  load_to_bigquery.py (google-cloud-bigquery, schéma explicite)
-        ▼
- BigQuery Sandbox : nyc_taxi.yellow_tripdata_raw
+        │  check_source_available : HTTP HEAD sur le fichier du mois (CloudFront)
+        │  download_taxi_data.py (requests, streaming)              ┐
+        ▼                                                           │ ingest
+   data/*.parquet (local) ──────────────► spark/ (PySpark local,    │
+        │  load_to_bigquery.py             mêmes 3 étages,          ┘
+        ▼                                  comparé à BigQuery)
+ BigQuery Sandbox : nyc_taxi.yellow_tripdata_raw          (staging)
         │  sql/01_data_quality_checks.sql (contrôle : nulls, doublons, cohérence)
         │  sql/02_transform_trips_clean.sql (filtre + colonnes dérivées)
         ▼
- BigQuery : nyc_taxi.trips_clean
+ BigQuery : nyc_taxi.trips_clean                          (nettoyée)
         │  sql/03_analytics_daily_kpis.sql (agrégats journaliers)
         ▼
- BigQuery : nyc_taxi.daily_kpis
-        │
+ BigQuery : nyc_taxi.daily_kpis                           (agrégats)
+        │  dbt test (dbt/) : 20 tests sur les 3 tables
+            └──────────────────────────────────────────────────────────────────┘
         ▼
    Looker Studio (dashboard, connexion directe BigQuery)
 ```
@@ -54,7 +90,9 @@ dessous des quotas gratuits :
 | Ressource                          | Utilisé      | Quota gratuit Sandbox |
 |-------------------------------------|-------------|------------------------|
 | Stockage BigQuery (3 tables)         | ~935 Mo     | 10 Go                  |
-| Volume de requêtes (chargement + SQL)| < 1 Go traité| 1 To/mois             |
+| Volume de requêtes SQL (`sql/01-03`, une exécution) | ~1,3 Go traité (793 + 329 + 186 Mo) | 1 To/mois |
+
+Le chargement (load job) n'est pas facturé en volume de requêtes.
 
 ## Volumétrie traitée
 
@@ -117,6 +155,119 @@ Le fichier `.env` et toute clé de service ne sont jamais commités (`.gitignore
 
 Looker Studio est gratuit sans limite liée à ce projet (facturé uniquement le
 volume de requêtes BigQuery sous-jacent, déjà comptabilisé ci-dessus).
+
+## PySpark local (voie alternative)
+
+Le pipeline BigQuery ci-dessus reste la voie principale (SQL managé, dashboard
+Looker Studio). `spark/` ajoute une **voie alternative en parallèle**, sur les
+mêmes données Parquet locales : elle reproduit les 3 mêmes étages (contrôle
+qualité → `trips_clean` → `daily_kpis`) avec la DataFrame API PySpark plutôt
+qu'en SQL BigQuery, en local (`local[*]`, sans cluster ni service Spark
+managé). Objectif : démontrer la même logique de traitement de données avec un
+moteur de traitement distribué (Spark), en complément du SQL managé — utile
+pour comparer les deux approches ou repartir sur un moteur non-SQL si le
+volume dépassait un jour les quotas Sandbox.
+
+Prérequis : Java 17+ (requis par Spark), en plus de l'environnement Python
+déjà utilisé pour l'ingestion (`pip install -r requirements.txt` installe
+aussi `pyspark`).
+
+```bash
+# Transformation (lit data/yellow_tripdata_2025-01.parquet par défaut)
+python spark/spark_transform.py --file data/yellow_tripdata_2025-01.parquet
+
+# Equivalent avec spark-submit
+spark-submit spark/spark_transform.py --file data/yellow_tripdata_2025-01.parquet
+```
+
+Écrit `data/spark_output/trips_clean.parquet` et `data/spark_output/daily_kpis.parquet`
+(non commités, voir `.gitignore`).
+
+### Vérification d'équivalence avec BigQuery
+
+`spark/compare_with_bigquery.py` compare le nombre de lignes de `trips_clean`
+et les agrégats clés de `daily_kpis` (nombre de jours, volume total de
+courses, revenu total, tip % moyen) entre la sortie PySpark locale et les
+tables BigQuery correspondantes, avec une tolérance de 0.5 % (arrondis
+différents entre les deux moteurs). Il n'y a pas encore de suite pytest dans
+ce repo ; ce script s'exécute donc en standalone et retourne un code de sortie
+non nul si un écart dépasse la tolérance :
+
+```bash
+# Nécessite le pipeline BigQuery déjà exécuté (étape 4) et spark_transform.py
+# déjà exécuté (étape ci-dessus), avec le même GCP_PROJECT_ID que .env
+python spark/compare_with_bigquery.py
+```
+
+## Tests de qualité : dbt
+
+`dbt/` est un projet dbt (`dbt-bigquery`) qui déclare les 3 tables produites
+par `sql/01-03` comme **sources** et les teste. Il ne matérialise aucun modèle :
+les transformations restent dans `sql/`, dbt sert de contrôle qualité en aval.
+
+| Table | Tests |
+|---|---|
+| `yellow_tripdata_raw` | `not_null` sur pickup/dropoff |
+| `trips_clean` | `not_null` (dates, `pickup_date`, zones) ; `trip_distance` > 0 et ≤ 200 ; `fare_amount` entre 0 et 1000 ; `pickup_date` entre 2024-01-01 et 2025-12-31 ; `pickup_weekday` ∈ jours de la semaine ; dropoff ≥ pickup et durée ≤ 6 h |
+| `daily_kpis` | `unique` + `not_null` sur `pickup_date` (clé) ; `trip_count` et `revenue_usd` non nuls et > 0 ; réconciliation `SUM(trip_count)` = `COUNT(*)` de `trips_clean` |
+
+Les seuils reprennent les règles de filtrage de `sql/02_transform_trips_clean.sql`.
+`trips_clean` n'a pas de clé naturelle (aucun identifiant de course dans la
+source TLC) : pas de test `unique` sur cette table.
+
+Authentification : `method: oauth` dans `dbt/profiles.yml`, c'est-à-dire ADC
+(le même `gcloud auth application-default login` que le reste du pipeline),
+sans clé JSON.
+
+```bash
+# dbt dans un venv séparé (évite les conflits de dépendances)
+py -3.11 -m venv .venv-dbt
+.venv-dbt\Scripts\pip install dbt-core==1.12.6 dbt-bigquery==1.12.1
+
+set GCP_PROJECT_ID=<PROJECT_ID>
+.venv-dbt\Scripts\dbt test --project-dir dbt --profiles-dir dbt
+# Résultat obtenu le 2026-10-16 : Done. PASS=20 WARN=0 ERROR=0 SKIP=0 TOTAL=20
+```
+
+## Orchestration : Airflow
+
+`airflow/dags/nyc_taxi_pipeline.py` enchaîne tout le pipeline :
+
+```
+check_source_available → ingest → sql_quality_checks → sql_trips_clean → sql_daily_kpis → dbt_test
+```
+
+- `check_source_available` : requête HTTP `HEAD` sur le fichier public NYC TLC
+  du mois demandé ; la tâche échoue si le fichier n'est pas encore publié.
+- `ingest` : réutilise `download_taxi_data.py` et `load_to_bigquery.py`.
+- `sql_*` : exécute `sql/01`, `02`, `03` tels quels via le client BigQuery
+  (les résultats des contrôles qualité de `sql/01` sont écrits dans le log).
+- `dbt_test` : lance `dbt test` sur `dbt/`.
+
+Paramètres `year` / `month` (défaut 2025 / 1), déclenchement manuel
+(`schedule=None`).
+
+Airflow ne s'exécute pas nativement sous Windows. `airflow/docker-compose.yml`
+fournit un environnement minimal : un seul conteneur `apache/airflow:3.3.2`,
+base SQLite, dbt installé dans un venv séparé, repo monté sur `/opt/pipeline`,
+et répertoire gcloud de l'hôte monté **en lecture seule** pour ADC (aucune clé).
+
+```bash
+docker compose -f airflow/docker-compose.yml build
+
+# Validation + exécution complète d'un run, sans scheduler
+docker compose -f airflow/docker-compose.yml run --rm airflow bash -c \
+  "airflow db migrate && airflow dags reserialize && airflow dags list && airflow dags test nyc_taxi_pipeline 2025-01-01"
+
+# UI (dev) sur http://localhost:8080
+docker compose -f airflow/docker-compose.yml up
+```
+
+Sous Linux/macOS, définir `GCLOUD_CONFIG_DIR=~/.config/gcloud` avant `docker compose`.
+
+Exécuté le 2026-10-16 (`airflow dags test nyc_taxi_pipeline 2025-01-01`) :
+les 6 tâches sont en succès, avec le HEAD TLC → 200 (59 158 238 octets),
+3 475 226 lignes chargées, `sql/01-03` OK et `dbt test` PASS=20.
 
 ## Sécurité & gouvernance des accès
 
