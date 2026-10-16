@@ -1,0 +1,27 @@
+# Minimal Airflow to run the DAG locally (Airflow does not run natively on Windows).
+# Single container, SQLite metadata DB, `airflow standalone` (dev only).
+#
+#   docker compose -f airflow/docker-compose.yml build
+#   docker compose -f airflow/docker-compose.yml run --rm airflow airflow dags test nyc_taxi_pipeline 2025-01-01
+#   docker compose -f airflow/docker-compose.yml up        # UI on http://localhost:8080
+services:
+  airflow:
+    build: .
+    image: nyc-taxi-airflow:local
+    command: standalone
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-mini-siem-taxi-pipeline}
+      BQ_DATASET: nyc_taxi
+      BQ_TABLE: yellow_tripdata_raw
+      PIPELINE_DIR: /opt/pipeline
+      # ADC from the host gcloud config (mounted read-only below), no key file.
+      CLOUDSDK_CONFIG: /opt/gcloud
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - ..:/opt/pipeline
+      # Windows: %APPDATA%\gcloud ; Linux/macOS: set GCLOUD_CONFIG_DIR=~/.config/gcloud
+      - ${GCLOUD_CONFIG_DIR:-${APPDATA}/gcloud}:/opt/gcloud:ro
