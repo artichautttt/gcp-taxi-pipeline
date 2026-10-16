@@ -1,0 +1,62 @@
+version: 2
+
+sources:
+  - name: nyc_taxi
+    description: Tables built by ingestion/load_to_bigquery.py and sql/01-03.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: "{{ env_var('BQ_DATASET', 'nyc_taxi') }}"
+    tables:
+      - name: yellow_tripdata_raw
+        description: Raw NYC TLC Yellow Taxi trips, loaded as-is from Parquet.
+        columns:
+          - name: tpep_pickup_datetime
+            data_tests: [not_null]
+          - name: tpep_dropoff_datetime
+            data_tests: [not_null]
+
+      - name: trips_clean
+        description: Filtered trips with derived columns (sql/02_transform_trips_clean.sql).
+        columns:
+          - name: tpep_pickup_datetime
+            data_tests: [not_null]
+          - name: tpep_dropoff_datetime
+            data_tests: [not_null]
+          - name: pickup_date
+            data_tests:
+              - not_null
+              - value_between:
+                  arguments:
+                    min_value: "date '2024-01-01'"
+                    max_value: "date '2025-12-31'"
+          - name: PULocationID
+            data_tests: [not_null]
+          - name: DOLocationID
+            data_tests: [not_null]
+          - name: trip_distance
+            data_tests:
+              - positive
+              - value_between:
+                  arguments:
+                    min_value: 0
+                    max_value: 200
+          - name: fare_amount
+            data_tests:
+              - value_between:
+                  arguments:
+                    min_value: 0
+                    max_value: 1000
+          - name: pickup_weekday
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+
+      - name: daily_kpis
+        description: One row per pickup date (sql/03_analytics_daily_kpis.sql).
+        columns:
+          - name: pickup_date
+            data_tests: [unique, not_null]
+          - name: trip_count
+            data_tests: [not_null, positive]
+          - name: revenue_usd
+            data_tests: [not_null, positive]

@@ -1,0 +1,12 @@
+# dbt project: declares the tables built by sql/01-03 as sources and tests them.
+# No model is materialized here: the transformations stay in sql/ (run by the
+# pipeline / Airflow DAG); dbt is the data-quality gate on top of them.
+name: nyc_taxi
+version: "1.0.0"
+config-version: 2
+profile: nyc_taxi
+
+model-paths: ["models"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
