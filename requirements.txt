@@ -2,3 +2,5 @@ requests==2.34.2
 google-cloud-bigquery==3.45.2
 python-dotenv==1.2.3
 pyarrow==25.0.1
+pyspark==3.5.7
+pandas==2.3.3
