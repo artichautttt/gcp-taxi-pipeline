@@ -30,3 +30,8 @@ airflow/*.cfg
 
 __pycache__/
 *.pyc
+
+# Excel workbooks (only the VBA source vba/*.bas is versioned)
+*.xlsm
+*.xlsx
+~$*

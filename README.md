@@ -269,6 +269,65 @@ Exécuté le 2026-10-16 (`airflow dags test nyc_taxi_pipeline 2025-01-01`) :
 les 6 tâches sont en succès, avec le HEAD TLC → 200 (59 158 238 octets),
 3 475 226 lignes chargées, `sql/01-03` OK et `dbt test` PASS=20.
 
+## Référentiel des zones : nettoyage Excel VBA
+
+Les trajets ne contiennent que des identifiants (`PULocationID`, `DOLocationID`).
+Pour les traduire en quartiers, la TLC publie une table de référence,
+[`taxi_zone_lookup.csv`](https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv)
+(265 zones). Elle n'est pas homogène : les zones inconnues 264 et 265 utilisent
+tantôt `Unknown`, tantôt `N/A`, et les exports retouchés à la main ajoutent des
+espaces, des casses différentes ou des doublons.
+
+Le module [`vba/TaxiZoneCleaner.bas`](vba/TaxiZoneCleaner.bas) (macro
+`CleanTaxiZones`) automatise ce nettoyage en local, dans Excel :
+
+| Règle | Exemple |
+|---|---|
+| Espaces : trim, espaces doubles, espaces insécables, tabulations | `" queens "` → `Queens` |
+| Borough ramené à une orthographe unique | `BRONX`, `the bronx` → `Bronx` |
+| `service_zone` ramené à une orthographe unique | `yellow zone` → `Yellow Zone`, `airport` → `Airports` |
+| Valeurs inconnues harmonisées | `N/A`, vide, `null` → `Unknown` |
+| Séparateurs dans les noms de zone | `Allerton / Pelham Gardens` → `Allerton/Pelham Gardens` |
+| Casse corrigée seulement si tout en majuscules ou tout en minuscules | `ALPHABET CITY` → `Alphabet City` (`JFK Airport` reste intact) |
+| `LocationID` non numérique ou en double : ligne rejetée | `abc`, 2ᵉ ligne `4` |
+| Signalés sans être modifiés : IDs manquants, borough inconnu, même nom de zone sur plusieurs IDs | `Corona` = 56 et 57 (légitime dans le fichier TLC) |
+
+Sorties :
+- feuille `zones_clean` : `location_id, borough, zone, service_zone, is_airport, is_unknown` ;
+- feuille `zones_log` : chaque modification, rejet ou alerte (avant / après / règle) ;
+- fichier `data/taxi_zone_lookup_clean.csv` (UTF-8 sans BOM), prêt pour BigQuery.
+
+Utilisation :
+
+```bash
+curl -o data/taxi_zone_lookup.csv https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+```
+
+1. Créer un classeur Excel prenant en charge les macros (`.xlsm`) dans `vba/`
+   (la macro cherche alors `../data/taxi_zone_lookup.csv`, sinon il ouvre un sélecteur de fichier).
+2. `Alt+F11` → Fichier → Importer un fichier → `vba/TaxiZoneCleaner.bas`.
+3. `Alt+F8` → `CleanTaxiZones` → Exécuter.
+
+Pour essayer les règles, `vba/sample/taxi_zone_lookup_dirty.csv` contient
+des défauts volontaires (choisir ce fichier dans le sélecteur).
+
+Chargement dans BigQuery et jointure avec les trajets :
+
+```bash
+bq load --source_format=CSV --skip_leading_rows=1 --replace nyc_taxi.taxi_zones \
+  data/taxi_zone_lookup_clean.csv \
+  location_id:INTEGER,borough:STRING,zone:STRING,service_zone:STRING,is_airport:BOOLEAN,is_unknown:BOOLEAN
+```
+
+```sql
+SELECT z.borough, COUNT(*) AS trips
+FROM nyc_taxi.trips_clean t
+JOIN nyc_taxi.taxi_zones z ON z.location_id = t.PULocationID
+GROUP BY z.borough ORDER BY trips DESC;
+```
+
+Seul le code `.bas` est versionné (texte lisible dans git), pas le classeur `.xlsm`.
+
 ## Sécurité & gouvernance des accès
 
 ### Analyse de risque
