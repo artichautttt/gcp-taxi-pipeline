@@ -326,6 +326,21 @@ JOIN nyc_taxi.taxi_zones z ON z.location_id = t.PULocationID
 GROUP BY z.borough ORDER BY trips DESC;
 ```
 
+Résultats mesurés le 2026-10-23 (macro exécutée dans Excel, puis `bq load`) :
+
+| Fichier | Lignes lues | Gardées | Rejetées | Valeurs corrigées | Entrées du journal |
+|---|---|---|---|---|---|
+| `vba/sample/taxi_zone_lookup_dirty.csv` | 11 | 9 | 2 (ID `abc`, ID `4` en double) | 13 | 16 |
+| `taxi_zone_lookup.csv` (TLC officiel) | 265 | 265 | 0 | 4 (`N/A` → `Unknown` sur 264 et 265) | 7 (4 corrections + 3 alertes « même zone » : `Corona` 56/57, `Governor's Island/Ellis Island/Liberty Island` 103/104/105) |
+
+Dans BigQuery, `nyc_taxi.taxi_zones` contient 265 zones (2 inconnues, 3 aéroports).
+La jointure avec `trips_clean` couvre les 3 253 304 trajets (0 sans zone) :
+Manhattan 2 907 381, Queens 269 203, Brooklyn 55 453, Bronx 12 764,
+Unknown 8 223, Staten Island 203, EWR 77.
+
+Pour l'automatisation ou les tests, `CleanTaxiZoneFile(chemin)` fait le même
+traitement sans boîte de dialogue et renvoie le résumé.
+
 Seul le code `.bas` est versionné (texte lisible dans git), pas le classeur `.xlsm`.
 
 ## Sécurité & gouvernance des accès

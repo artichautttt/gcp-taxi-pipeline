@@ -22,12 +22,26 @@ Private Const SHEET_LOG As String = "zones_log"
 
 Private logRows As Collection
 
+' Interactive macro (Alt+F8): finds the file, runs the cleaning, shows a summary.
 Public Sub CleanTaxiZones()
-    Dim inputPath As String
+    Dim inputPath As String, summary As String
     inputPath = FindInputFile()
     If inputPath = "" Then Exit Sub
 
     On Error GoTo Fail
+    summary = CleanTaxiZoneFile(inputPath)
+    MsgBox summary, vbInformation, "Taxi Zone Lookup cleaned"
+    Exit Sub
+
+Fail:
+    Application.ScreenUpdating = True
+    MsgBox "Cleaning failed: " & Err.Description, vbCritical, "TaxiZoneCleaner"
+End Sub
+
+' Cleans one file without any dialog and returns the summary text.
+' Errors are raised to the caller. Usable from automation:
+'   Application.Run "TaxiZoneCleaner.CleanTaxiZoneFile", "C:\...\taxi_zone_lookup.csv"
+Public Function CleanTaxiZoneFile(ByVal inputPath As String) As String
     Application.ScreenUpdating = False
     Set logRows = New Collection
 
@@ -119,18 +133,13 @@ NextRow:
     ExportCsv outputPath, out, nOut
 
     Application.ScreenUpdating = True
-    MsgBox "Rows read: " & nRead & vbLf & _
+    CleanTaxiZoneFile = "Rows read: " & nRead & vbLf & _
            "Rows kept: " & nOut & vbLf & _
            "Rows rejected: " & nRejected & vbLf & _
            "Values changed: " & nChanged & vbLf & _
            "Log entries: " & logRows.Count & " (sheet " & SHEET_LOG & ")" & vbLf & vbLf & _
-           "Exported: " & outputPath, vbInformation, "Taxi Zone Lookup cleaned"
-    Exit Sub
-
-Fail:
-    Application.ScreenUpdating = True
-    MsgBox "Cleaning failed: " & Err.Description, vbCritical, "TaxiZoneCleaner"
-End Sub
+           "Exported: " & outputPath
+End Function
 
 ' ---------------------------------------------------------------- cleaning
 
