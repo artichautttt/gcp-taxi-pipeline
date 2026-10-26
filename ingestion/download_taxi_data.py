@@ -14,28 +14,45 @@ TLC_BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
-def download_month(year: int, month: int) -> Path:
+class IncompleteDownloadError(Exception):
+    pass
+
+
+def download_month(year: int, month: int, data_dir: Path = DATA_DIR) -> Path:
+    """Downloads one month. The file is written to <name>.part, its size is
+    checked against Content-Length, then it is renamed: an interrupted
+    download never leaves a truncated .parquet that a re-run would reuse."""
     filename = f"yellow_tripdata_{year}-{month:02d}.parquet"
     url = f"{TLC_BASE_URL}/{filename}"
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dest = DATA_DIR / filename
+    data_dir.mkdir(parents=True, exist_ok=True)
+    dest = data_dir / filename
+    part = data_dir / f"{filename}.part"
 
     if dest.exists():
         print(f"[skip] {dest} already exists ({dest.stat().st_size / 1e6:.1f} MB)")
         return dest
 
     print(f"[download] {url}")
-    with requests.get(url, stream=True, timeout=60) as resp:
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        written = 0
-        with open(dest, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                written += len(chunk)
-                if total:
-                    pct = written / total * 100
-                    print(f"\r  {written / 1e6:.1f} / {total / 1e6:.1f} MB ({pct:.0f}%)", end="")
+    try:
+        with requests.get(url, stream=True, timeout=60) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length", 0))
+            written = 0
+            with open(part, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+                    written += len(chunk)
+                    if total:
+                        pct = written / total * 100
+                        print(f"\r  {written / 1e6:.1f} / {total / 1e6:.1f} MB ({pct:.0f}%)", end="")
+        size = part.stat().st_size
+        if total and size != total:
+            raise IncompleteDownloadError(f"{url}: got {size} bytes, Content-Length is {total}")
+        if size == 0:
+            raise IncompleteDownloadError(f"{url}: empty file")
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
     print(f"\n[done] saved to {dest}")
     return dest
 
