@@ -364,6 +364,20 @@ python ingestion/load_raw_month.py --year 2025 --month 3
 .venv-dbt\Scripts\dbt test --project-dir dbt --profiles-dir dbt --exclude source:nyc_taxi
 ```
 
+### Ce que vérifie la CI (et ce qu'elle ne vérifie pas)
+
+GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
+à BigQuery. Elle vérifie seulement :
+- le lint SQL (`sqlfluff lint dbt/models dbt/tests`) ;
+- `dbt parse` et `dbt compile` (avec un faux fichier ADC sans valeur réelle et
+  `--no-populate-cache --no-introspect`, pour qu'aucune requête ne parte) ;
+- pytest, dont l'import réel des deux DAG par le `DagBag` d'Airflow 3.3.2.
+
+**Les 41 tests dbt du schéma en étoile ne tournent pas en CI** : ils tournent
+en local contre BigQuery (`dbt test` ou tâche `dbt_test` du DAG), comme les
+exécutions du DAG. Un modèle qui compile en CI peut donc encore échouer sur
+BigQuery.
+
 ### Expiration Sandbox et rechargement
 
 Toute table du dataset expire 60 jours après sa dernière création ou son
