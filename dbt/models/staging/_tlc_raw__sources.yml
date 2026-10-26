@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: tlc_raw
+    description: >
+      Monthly raw tables loaded as-is by ingestion/load_raw_month.py, one table
+      per month (raw_yellow_tripdata_YYYYMM, WRITE_TRUNCATE). Read through the
+      BigQuery wildcard; _TABLE_SUFFIX gives the month of the file.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: "{{ env_var('BQ_DATASET', 'nyc_taxi') }}"
+    tables:
+      - name: raw_yellow_tripdata
+        identifier: "raw_yellow_tripdata_*"
+        description: NYC TLC Yellow Taxi trip records, all loaded months.

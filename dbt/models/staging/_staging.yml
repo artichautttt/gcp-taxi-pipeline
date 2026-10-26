@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: stg_yellow_trips
+    description: >
+      Raw trip records of every loaded month, renamed to snake_case, not
+      filtered. View: costs nothing to store, rebuilt on each read.
+    columns:
+      - name: source_month
+        description: Month of the raw file (YYYYMM), from the table suffix.
+        data_tests: [not_null]
+      - name: pickup_zone_id
+        data_tests: [not_null]
+      - name: dropoff_zone_id
+        data_tests: [not_null]

@@ -97,7 +97,10 @@ def nyc_taxi_pipeline():
     dbt_test = BashOperator(
         task_id="dbt_test",
         bash_command=(
-            f"{DBT_BIN} test --project-dir {PIPELINE_DIR}/dbt --profiles-dir {PIPELINE_DIR}/dbt "
+            # Only the tests on the sql/01-03 tables: the star-schema models
+            # are built and tested separately (dbt run/test with pipeline_month).
+            f"{DBT_BIN} test --select source:nyc_taxi "
+            f"--project-dir {PIPELINE_DIR}/dbt --profiles-dir {PIPELINE_DIR}/dbt "
             "--target-path /tmp/dbt_target --log-path /tmp/dbt_logs --no-use-colors"
         ),
     )

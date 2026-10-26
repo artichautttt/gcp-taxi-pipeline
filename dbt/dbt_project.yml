@@ -1,12 +1,60 @@
-# dbt project: declares the tables built by sql/01-03 as sources and tests them.
-# No model is materialized here: the transformations stay in sql/ (run by the
-# pipeline / Airflow DAG); dbt is the data-quality gate on top of them.
+# dbt project, two independent parts:
+#
+# 1. Legacy quality gate (models/sources.yml, source `nyc_taxi`): tests the
+#    tables built by sql/01-03 (trips_clean, daily_kpis). The nyc_taxi_pipeline
+#    DAG runs only these tests (`dbt test --select source:nyc_taxi`).
+#
+# 2. ELT star schema (models/staging, intermediate, marts), built from the
+#    monthly raw tables raw_yellow_tripdata_YYYYMM (source `tlc_raw`):
+#        stg_yellow_trips -> int_trips_classified -> fct_trips + audit_trip_rows
+#        seeds -> dim_zones, dim_payment_type, dim_rate_code ; dim_date generated
+#    One month per run: dbt run --vars '{pipeline_month: 202501}'.
+#
+# Everything lands in the single dataset the service account may write to
+# (BQ_DATASET, default nyc_taxi); layers are told apart by prefix.
 name: nyc_taxi
 version: "1.0.0"
 config-version: 2
 profile: nyc_taxi
 
 model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
 test-paths: ["tests"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages", "logs"]
+
+vars:
+  # Month to build, YYYYMM. No default on purpose: a run without it fails
+  # instead of silently rebuilding the wrong month (see macros/pipeline_month.sql).
+  # pipeline_month: 202501
+  dim_date_start: "2024-01-01"
+  dim_date_end: "2026-12-31"
+
+models:
+  nyc_taxi:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+
+seeds:
+  nyc_taxi:
+    taxi_zone_lookup:
+      +column_types:
+        location_id: int64
+        borough: string
+        zone: string
+        service_zone: string
+        is_airport: bool
+        is_unknown: bool
+    payment_type_lookup:
+      +column_types:
+        payment_type_id: int64
+        payment_type_name: string
+    rate_code_lookup:
+      +column_types:
+        rate_code_id: int64
+        rate_code_name: string
