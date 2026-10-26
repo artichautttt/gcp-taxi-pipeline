@@ -50,7 +50,10 @@ def _dbt(command: str) -> str:
     catchup=False,
     max_active_runs=1,
     params={
-        "year": Param(2025, type="integer", minimum=2024, maximum=2029),
+        # Same range as dim_date (vars dim_date_start/dim_date_end in
+        # dbt_project.yml): a month outside it would fail the relationships
+        # test fct_trips.pickup_date -> dim_date. Widen both together.
+        "year": Param(2025, type="integer", minimum=2024, maximum=2026),
         "month": Param(1, type="integer", minimum=1, maximum=12),
     },
     tags=["nyc_taxi", "bigquery", "dbt", "elt"],
