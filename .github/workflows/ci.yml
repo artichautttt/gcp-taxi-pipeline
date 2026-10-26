@@ -1,0 +1,75 @@
+# CI without any secret: no GCP credential is configured, nothing touches
+# BigQuery. Python 3.11 everywhere, the version of the Airflow Docker image
+# (apache/airflow:3.3.2-python3.11) and of the local dbt virtualenv.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  AIRFLOW_VERSION: "3.3.2"
+
+jobs:
+  sql-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install sqlfluff==4.4.0
+      - run: sqlfluff lint dbt/models dbt/tests
+
+  dbt-parse-compile:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholder project id: nothing here reaches a real GCP project.
+      GCP_PROJECT_ID: ci-placeholder
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install dbt-core==1.12.6 dbt-bigquery==1.12.1
+      - name: dbt parse
+        run: dbt parse --project-dir dbt --profiles-dir dbt
+      - name: dbt compile (no credentials)
+        # dbt-bigquery builds a client before compiling, and the client needs
+        # some ADC. A dummy authorized_user file (fake values, not a secret)
+        # satisfies it; --no-populate-cache and --no-introspect keep dbt from
+        # querying BigQuery, so the fake token is never used.
+        run: |
+          printf '{"type": "authorized_user", "client_id": "ci-dummy", "client_secret": "ci-dummy", "refresh_token": "ci-dummy"}' \
+            > "$RUNNER_TEMP/dummy_adc.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/dummy_adc.json" \
+            dbt --no-populate-cache compile --no-introspect \
+            --project-dir dbt --profiles-dir dbt --vars '{pipeline_month: 202501}'
+
+  tests:
+    # pytest, including the real import of both DAGs by Airflow's DagBag
+    # (REQUIRE_AIRFLOW=1 turns a missing Airflow into a failure, not a skip).
+    runs-on: ubuntu-latest
+    env:
+      REQUIRE_AIRFLOW: "1"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the secret scan test reads the whole git history
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Airflow with its official constraints
+        run: |
+          pip install "apache-airflow==${AIRFLOW_VERSION}" apache-airflow-providers-standard \
+            google-cloud-bigquery requests python-dotenv \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+          pip install pytest==9.1.1
+      - run: python -m pytest -v tests/test_dags.py tests/test_quality_gate.py tests/test_load_raw_month.py tests/test_download_taxi_data.py tests/test_check_secrets.py

@@ -1,0 +1,11 @@
+version: 2
+
+seeds:
+  - name: taxi_zone_lookup
+    description: >
+      Output of vba/TaxiZoneCleaner.bas on the official TLC taxi_zone_lookup.csv
+      (https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv), 265 zones.
+  - name: payment_type_lookup
+    description: Payment type codes, NYC TLC Yellow Taxi data dictionary.
+  - name: rate_code_lookup
+    description: Rate code codes, NYC TLC Yellow Taxi data dictionary (99 = Null/unknown).
