@@ -189,9 +189,9 @@ spark-submit spark/spark_transform.py --file data/yellow_tripdata_2025-01.parque
 et les agrégats clés de `daily_kpis` (nombre de jours, volume total de
 courses, revenu total, tip % moyen) entre la sortie PySpark locale et les
 tables BigQuery correspondantes, avec une tolérance de 0.5 % (arrondis
-différents entre les deux moteurs). Il n'y a pas encore de suite pytest dans
-ce repo ; ce script s'exécute donc en standalone et retourne un code de sortie
-non nul si un écart dépasse la tolérance :
+différents entre les deux moteurs). Ce script s'exécute en standalone, hors
+pytest (il a besoin de BigQuery et de la sortie Spark), et retourne un code de
+sortie non nul si un écart dépasse la tolérance :
 
 ```bash
 # Nécessite le pipeline BigQuery déjà exécuté (étape 4) et spark_transform.py
@@ -201,9 +201,11 @@ python spark/compare_with_bigquery.py
 
 ## Tests de qualité : dbt
 
-`dbt/` est un projet dbt (`dbt-bigquery`) qui déclare les 3 tables produites
-par `sql/01-03` comme **sources** et les teste. Il ne matérialise aucun modèle :
-les transformations restent dans `sql/`, dbt sert de contrôle qualité en aval.
+`dbt/` est un projet dbt (`dbt-bigquery`) en deux parties. Cette section décrit
+la première : il déclare les 3 tables produites par `sql/01-03` comme
+**sources** et les teste (dbt sert ici de contrôle qualité en aval de `sql/`).
+La seconde, le schéma en étoile, est décrite dans
+[Schéma en étoile dbt et DAG `nyc_taxi_elt`](#schéma-en-étoile-dbt-et-dag-nyc_taxi_elt).
 
 | Table | Tests |
 |---|---|
@@ -225,8 +227,9 @@ py -3.11 -m venv .venv-dbt
 .venv-dbt\Scripts\pip install dbt-core==1.12.6 dbt-bigquery==1.12.1
 
 set GCP_PROJECT_ID=<PROJECT_ID>
-.venv-dbt\Scripts\dbt test --project-dir dbt --profiles-dir dbt
+.venv-dbt\Scripts\dbt test --select source:nyc_taxi --project-dir dbt --profiles-dir dbt
 # Résultat obtenu le 2026-10-16 : Done. PASS=20 WARN=0 ERROR=0 SKIP=0 TOTAL=20
+# (relancé le 2026-10-26 avec --select source:nyc_taxi : PASS=20)
 ```
 
 ## Orchestration : Airflow
@@ -242,7 +245,8 @@ check_source_available → ingest → sql_quality_checks → sql_trips_clean →
 - `ingest` : réutilise `download_taxi_data.py` et `load_to_bigquery.py`.
 - `sql_*` : exécute `sql/01`, `02`, `03` tels quels via le client BigQuery
   (les résultats des contrôles qualité de `sql/01` sont écrits dans le log).
-- `dbt_test` : lance `dbt test` sur `dbt/`.
+- `dbt_test` : lance `dbt test --select source:nyc_taxi` (les 20 tests des
+  tables `sql/01-03` ; le schéma en étoile est testé par le DAG `nyc_taxi_elt`).
 
 Paramètres `year` / `month` (défaut 2025 / 1), déclenchement manuel
 (`schedule=None`).
@@ -268,6 +272,114 @@ Sous Linux/macOS, définir `GCLOUD_CONFIG_DIR=~/.config/gcloud` avant `docker co
 Exécuté le 2026-10-16 (`airflow dags test nyc_taxi_pipeline 2025-01-01`) :
 les 6 tâches sont en succès, avec le HEAD TLC → 200 (59 158 238 octets),
 3 475 226 lignes chargées, `sql/01-03` OK et `dbt test` PASS=20.
+
+## Schéma en étoile dbt et DAG `nyc_taxi_elt`
+
+Deuxième chaîne, indépendante de la première (qui reste inchangée) : un mois
+à la fois, du fichier TLC brut jusqu'à un schéma en étoile construit et testé
+par dbt.
+
+```
+check_source → download → load_raw → dbt_seed → dbt_run → dbt_test → quality_gate
+```
+
+- `load_raw` : `ingestion/load_raw_month.py`, une table par mois
+  `raw_yellow_tripdata_AAAAMM`, en écrasement (`WRITE_TRUNCATE`).
+- `dbt_run` : `stg_yellow_trips` (vue sur `raw_yellow_tripdata_*`) →
+  `int_trips_classified` (chaque ligne reçoit la première règle d'exclusion
+  qu'elle enfreint) → `fct_trips` (un trajet par ligne) et `audit_trip_rows`
+  (comptes gardés / écartés par règle), plus `dim_zones`, `dim_date`,
+  `dim_payment_type`, `dim_rate_code`.
+- `dbt_test` : 41 tests (unique, not_null, relationships, accepted_values,
+  bornes, et 3 tests métier : réconciliation brut = gardées + écartées,
+  règles de trajet, total ≥ tarif + pourboire).
+- `quality_gate` : `quality/quality_gate.py` échoue si un test dbt n'est pas
+  passé, ou si les lignes chargées par le load job ≠ lignes de
+  `audit_trip_rows`, ou si les lignes gardées ≠ lignes du mois dans `fct_trips`.
+
+**Incrémental sans DML.** La Sandbox refuse `INSERT`, `DELETE` et `MERGE`
+(erreur 403 mesurée le 2026-10-26). `fct_trips` et `audit_trip_rows` sont donc
+partitionnées par un entier `AAAAMM` et reconstruites en `insert_overwrite`
+avec `copy_partitions` : relancer un mois remplace sa partition par une copie
+de table, sans toucher aux autres mois. Pas de partition par date : le
+dataset expire les partitions de plus de 60 jours, ce qui effacerait des
+données de 2025 dès leur écriture.
+
+**Règles d'exclusion** (dans cet ordre, une seule raison par ligne) :
+horodatage manquant, pickup hors du mois du fichier, dropoff avant pickup,
+durée > 6 h, distance nulle, ≤ 0 ou > 200 mi, tarif nul, < 0 ou > 1000 $,
+total inférieur à tarif + pourboire, doublon exact. La règle « pickup hors du
+mois » garde les partitions disjointes : le fichier de janvier contient
+quelques trajets de décembre, qui ne doivent pas écraser décembre.
+
+**Test remplacé.** Un premier test exigeait `total_amount` = somme des
+composants (tarif, extra, taxe MTA, pourboire, péages, surcharges). Il
+échouait sur 2 395 452 trajets de janvier 2025. Mesure sur le fichier brut
+(3 475 226 lignes) : 2 564 195 lignes s'écartent de plus d'un centime, et
+encore 1 111 807 après avoir ajouté la taxe CBD (`cbd_congestion_fee`, non
+chargée par ce projet). Les écarts les plus fréquents valent +2,50 $
+(396 358 lignes), −3,25 $ (391 172) et −2,50 $ (176 749), soit la surtaxe de
+congestion et la taxe CBD comptées en double ou absentes selon les
+enregistrements. C'est la façon dont le fichier TLC est rempli, pas une erreur
+du pipeline : ce test n'est pas gardé. Il est remplacé par la règle
+« total ≥ tarif + pourboire », enfreinte par 225 trajets sur 3 253 246 en
+janvier, désormais écartés (`invalid_total`) et vérifiés par un test bloquant.
+
+**Mesuré le 2026-10-26** (Sandbox BigQuery, exécution locale sous Docker) :
+
+| Mois | Lignes brutes | Dans `fct_trips` | Écartées |
+|---|---|---|---|
+| 2025-01 | 3 475 226 | 3 253 021 | 222 205 |
+| 2025-02 | 3 577 543 | 3 310 026 | 267 517 |
+| 2025-03 | 4 145 257 | 3 847 686 | 297 571 |
+
+- Exécution complète du DAG pour mars 2025 (`airflow dags test`, téléchargement
+  compris) : 211 s, 7 tâches en succès, 41/41 tests, contrôle qualité vert.
+- Relance du même mois : 206 s (fichier déjà présent, téléchargement sauté),
+  mêmes comptes à la ligne près, janvier et février inchangés.
+- Janvier et février ont été construits avec `dbt run` directement, pas par
+  le DAG. Une seule mesure par cas, sur une machine : les durées sont un ordre
+  de grandeur, pas un benchmark.
+
+```bash
+# un mois, de bout en bout (Docker)
+docker compose -f airflow/docker-compose.yml run --rm airflow bash -c \
+  'airflow db migrate && airflow dags test nyc_taxi_elt --conf "{\"year\": 2025, \"month\": 3}"'
+
+# sans Airflow
+python ingestion/load_raw_month.py --year 2025 --month 3
+.venv-dbt\Scripts\dbt seed --project-dir dbt --profiles-dir dbt
+.venv-dbt\Scripts\dbt run  --project-dir dbt --profiles-dir dbt --vars "{pipeline_month: 202503}"
+.venv-dbt\Scripts\dbt test --project-dir dbt --profiles-dir dbt --exclude source:nyc_taxi
+```
+
+### Expiration Sandbox et rechargement
+
+Toute table du dataset expire 60 jours après sa dernière création ou son
+dernier remplacement (réglage par défaut de la Sandbox). Dates relevées le
+2026-10-26 :
+
+| Table(s) | Expire le | Lue par |
+|---|---|---|
+| `yellow_tripdata_raw` | 16/11/2026 | `sql/01-02`, test dbt `source:nyc_taxi` |
+| `taxi_zones` | 22/12/2026 | exemple de jointure ci-dessous |
+| `trips_clean`, `daily_kpis` | 23/12/2026 | dashboard Looker Studio, `spark/compare_with_bigquery.py` |
+| tables du schéma en étoile (`raw_yellow_tripdata_*`, `fct_trips`, `dim_*`, seeds…) | 25/12/2026 | DAG `nyc_taxi_elt` |
+
+Conséquences si rien n'est rechargé :
+- après le 16/11, `sql/01-03` et le DAG `nyc_taxi_pipeline` ne peuvent plus
+  reconstruire `trips_clean` ni `daily_kpis`, et le test dbt sur
+  `yellow_tripdata_raw` échoue ;
+- après le 23/12, le dashboard Looker Studio et
+  `spark/compare_with_bigquery.py` cessent de fonctionner (tables absentes).
+
+Rechargement :
+- chaîne historique : relancer le DAG `nyc_taxi_pipeline` (ou
+  `load_to_bigquery.py` puis `sql/01-03`), ce qui recrée les trois tables avec
+  60 nouveaux jours ;
+- `taxi_zones` : relancer le `bq load` de la section VBA ;
+- schéma en étoile : relancer `nyc_taxi_elt` **pour chaque mois** voulu. Si
+  `fct_trips` a expiré, le premier run la recrée avec ce seul mois.
 
 ## Référentiel des zones : nettoyage Excel VBA
 
