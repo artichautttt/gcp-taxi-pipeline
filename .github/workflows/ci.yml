@@ -27,11 +27,10 @@ jobs:
       - run: pip install sqlfluff==4.4.0
       - run: sqlfluff lint dbt/models dbt/tests
 
-  dbt-parse:
+  dbt-parse-compile:
     runs-on: ubuntu-latest
     env:
-      # dbt parse renders the project without connecting; the profile only
-      # needs a project id string.
+      # Placeholder project id: nothing here reaches a real GCP project.
       GCP_PROJECT_ID: ci-placeholder
     steps:
       - uses: actions/checkout@v5
@@ -39,7 +38,19 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install dbt-core==1.12.6 dbt-bigquery==1.12.1
-      - run: dbt parse --project-dir dbt --profiles-dir dbt
+      - name: dbt parse
+        run: dbt parse --project-dir dbt --profiles-dir dbt
+      - name: dbt compile (no credentials)
+        # dbt-bigquery builds a client before compiling, and the client needs
+        # some ADC. A dummy authorized_user file (fake values, not a secret)
+        # satisfies it; --no-populate-cache and --no-introspect keep dbt from
+        # querying BigQuery, so the fake token is never used.
+        run: |
+          printf '{"type": "authorized_user", "client_id": "ci-dummy", "client_secret": "ci-dummy", "refresh_token": "ci-dummy"}' \
+            > "$RUNNER_TEMP/dummy_adc.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/dummy_adc.json" \
+            dbt --no-populate-cache compile --no-introspect \
+            --project-dir dbt --profiles-dir dbt --vars '{pipeline_month: 202501}'
 
   tests:
     # pytest, including the real import of both DAGs by Airflow's DagBag
