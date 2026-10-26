@@ -1,0 +1,35 @@
+# SQL lint for the dbt project (run in CI). The jinja templater with dbt
+# builtins renders ref/source/config/var without a warehouse connection; the
+# two project macros are replaced by fixed values below.
+# Scope: dbt/models and dbt/tests. The legacy sql/01-03 files (uppercase
+# style, run as-is by the nyc_taxi_pipeline DAG) are not linted.
+[sqlfluff]
+dialect = bigquery
+templater = jinja
+max_line_length = 120
+# ST06: columns stay in business order (keys, then measures).
+# AM04: select * is deliberate in the intermediate layer (passes every raw column on).
+exclude_rules = ST06, AM04
+
+[sqlfluff:templater:jinja]
+apply_dbt_builtins = True
+
+[sqlfluff:templater:jinja:macros]
+pipeline_month = {% macro pipeline_month() %}202501{% endmacro %}
+monthly_partition = {% macro monthly_partition(field='pickup_month') %}{% endmacro %}
+
+[sqlfluff:templater:jinja:context]
+dim_date_start = 2024-01-01
+dim_date_end = 2026-12-31
+
+[sqlfluff:indentation]
+tab_space_size = 4
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = lower
