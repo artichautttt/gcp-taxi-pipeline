@@ -327,19 +327,30 @@ janvier, désormais écartés (`invalid_total`) et vérifiés par un test bloqua
 
 **Mesuré le 2026-10-26** (Sandbox BigQuery, exécution locale sous Docker) :
 
-| Mois | Lignes brutes | Dans `fct_trips` | Écartées |
-|---|---|---|---|
-| 2025-01 | 3 475 226 | 3 253 021 | 222 205 |
-| 2025-02 | 3 577 543 | 3 310 026 | 267 517 |
-| 2025-03 | 4 145 257 | 3 847 686 | 297 571 |
+| Mois | Construit par | Lignes brutes | Dans `fct_trips` | Écartées |
+|---|---|---|---|---|
+| 2025-01 | `dbt run` (sans Airflow) | 3 475 226 | 3 253 021 | 222 205 |
+| 2025-02 | `dbt run` (sans Airflow) | 3 577 543 | 3 310 026 | 267 517 |
+| 2025-03 | DAG Airflow, de bout en bout | 4 145 257 | 3 847 686 | 297 571 |
 
-- Exécution complète du DAG pour mars 2025 (`airflow dags test`, téléchargement
-  compris) : 211 s, 7 tâches en succès, 41/41 tests, contrôle qualité vert.
-- Relance du même mois : 206 s (fichier déjà présent, téléchargement sauté),
-  mêmes comptes à la ligne près, janvier et février inchangés.
-- Janvier et février ont été construits avec `dbt run` directement, pas par
-  le DAG. Une seule mesure par cas, sur une machine : les durées sont un ordre
-  de grandeur, pas un benchmark.
+- **Seul mars 2025 a tourné de bout en bout par Airflow** (`airflow dags test`,
+  téléchargement compris) : 211 s, 7 tâches en succès, 41/41 tests, contrôle
+  qualité vert. Janvier et février ont été chargés par
+  `ingestion/load_raw_month.py` puis construits par `dbt run` directement.
+- Relance du même mois par le DAG : 206 s (fichier déjà présent, téléchargement
+  sauté), mêmes comptes à la ligne près, janvier et février inchangés.
+- Une seule mesure par cas, sur une machine : les durées sont un ordre de
+  grandeur, pas un benchmark.
+
+**Versions réellement testées** : Python 3.11 (image
+`apache/airflow:3.3.2-python3.11` pour le DAG, venv dbt local, CI) avec
+Airflow 3.3.2, dbt-core 1.12.6 et dbt-bigquery 1.12.1. Airflow 3.3.2 supporte
+officiellement Python 3.10 à 3.14, mais **Python 3.13 n'a pas été testé** pour
+ce pipeline.
+
+Le téléchargement écrit dans `<fichier>.part`, vérifie la taille reçue contre
+`Content-Length`, puis renomme : une coupure ne laisse jamais de Parquet
+tronqué qu'une relance réutiliserait (`tests/test_download_taxi_data.py`).
 
 ```bash
 # un mois, de bout en bout (Docker)
