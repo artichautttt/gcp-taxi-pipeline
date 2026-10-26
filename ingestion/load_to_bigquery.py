@@ -38,7 +38,8 @@ SCHEMA = [
 ]
 
 
-def load_file(local_path: Path, project_id: str, dataset: str, table: str) -> None:
+def load_file(local_path: Path, project_id: str, dataset: str, table: str) -> int:
+    """Loads the file (WRITE_TRUNCATE) and returns the row count of the table."""
     client = bigquery.Client(project=project_id)
     table_ref = f"{project_id}.{dataset}.{table}"
 
@@ -56,6 +57,7 @@ def load_file(local_path: Path, project_id: str, dataset: str, table: str) -> No
     table_obj = client.get_table(table_ref)
     print(f"[done] loaded {table_obj.num_rows:,} rows into {table_ref} "
           f"({table_obj.num_bytes / 1e6:.1f} MB)")
+    return table_obj.num_rows
 
 
 if __name__ == "__main__":

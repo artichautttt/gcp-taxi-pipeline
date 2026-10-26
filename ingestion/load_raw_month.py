@@ -29,11 +29,10 @@ def raw_table_name(year: int, month: int) -> str:
     return f"{RAW_TABLE_PREFIX}{year:04d}{month:02d}"
 
 
-def load_raw_month(year: int, month: int, project_id: str, dataset: str) -> str:
-    table = raw_table_name(year, month)
+def load_raw_month(year: int, month: int, project_id: str, dataset: str) -> int:
+    """Downloads (skipped if the file is already local) and loads one month; returns rows loaded."""
     local_path = download_month(year, month)
-    load_file(local_path, project_id, dataset, table)
-    return table
+    return load_file(local_path, project_id, dataset, raw_table_name(year, month))
 
 
 if __name__ == "__main__":
