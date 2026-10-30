@@ -7,5 +7,5 @@ select
     total_amount,
     fare_amount,
     tip_amount
-from {{ ref('fct_trips') }}
+from {{ ref('trips') }}
 where total_amount < fare_amount + coalesce(tip_amount, 0)

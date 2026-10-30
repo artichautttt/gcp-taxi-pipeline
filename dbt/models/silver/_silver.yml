@@ -1,0 +1,159 @@
+version: 2
+
+models:
+  - name: stg_yellow_trips
+    description: >
+      Bronze trip records of every loaded month, renamed to snake_case, not
+      filtered. View: costs nothing to store, rebuilt on each read.
+    columns:
+      - name: source_month
+        description: Month of the bronze file (YYYYMM), from the table suffix.
+        data_tests: [not_null]
+
+  - name: stg_taxi_zone_lookup
+    description: Raw TLC zone lookup (bronze CSV), LocationID cast to an integer.
+    columns:
+      - name: location_id
+        description: Null when LocationID is not an integer (the test fails then).
+        data_tests: [not_null, unique]
+
+  - name: stg_tlc_zone_trips
+    description: TLC published pickups / drop-offs per zone and month (bronze XML), typed.
+    columns:
+      - name: metric_month
+        data_tests: [not_null]
+      - name: zone_id
+        data_tests: [not_null]
+      - name: trip_count
+        data_tests: [not_null]
+
+  - name: trips
+    description: >
+      Silver trips: bronze rows that pass every rejection rule, typed, with
+      three warning flags. Incremental by month (insert_overwrite on the
+      integer partition pickup_month, copy jobs, no DML).
+    columns:
+      - name: trip_id
+        description: FARM_FINGERPRINT of the source fields of the row (exact copies share it).
+        data_tests: [unique, not_null]
+      - name: pickup_month
+        description: Pickup month YYYYMM, equal to the bronze file month. Partition key.
+        data_tests: [not_null]
+      - name: pickup_zone_id
+        data_tests: [not_null]
+      - name: dropoff_zone_id
+        data_tests: [not_null]
+      - name: payment_type_id
+        data_tests: [not_null]
+      - name: rate_code_id
+        description: TLC rate code; null in the source (Flex Fare rows) is mapped to 99 (Null/unknown).
+        data_tests: [not_null]
+      - name: vendor_id
+        description: TLC vendor code; any other code is rejected (unknown_vendor).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 6, 7]
+                quote: false
+      - name: trip_distance_mi
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0.01
+                max_value: 200
+      - name: trip_duration_min
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0.01
+                max_value: 360
+      - name: avg_speed_mph
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: fare_amount
+        data_tests:
+          - value_between:
+              arguments:
+                min_value: 0
+                max_value: 1000
+      - name: flag_unknown_zone
+        description: Warning, row kept. Pickup or drop-off in zone 264 or 265 (TLC "Unknown").
+      - name: flag_passenger_count
+        description: Warning, row kept. passenger_count null, 0 or above 6.
+      - name: flag_short_trip
+        description: Warning, row kept. Trip under 60 seconds.
+
+  - name: trips_quarantine
+    description: >
+      Rejected rows of each month, as received in bronze, with the rule
+      (rejection_reason), the run that rejected them (run_id) and when.
+      Replaced month by month: a re-run does not stack a second copy.
+    columns:
+      - name: source_month
+        data_tests: [not_null]
+      - name: rejection_reason
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                # rejection rules, in the order int_trips_classified checks them
+                values:
+                  - missing_timestamp
+                  - pickup_outside_file_month
+                  - dropoff_before_pickup
+                  - duration_over_6h
+                  - invalid_distance
+                  - invalid_fare
+                  - invalid_total
+                  - unknown_zone
+                  - unknown_payment_type
+                  - unknown_rate_code
+                  - unknown_vendor
+                  - zero_duration
+                  - implausible_speed
+                  - negative_component
+                  - duplicate
+                  - duplicate_business_key
+      - name: run_id
+        data_tests: [not_null]
+      - name: trip_id
+        data_tests: [not_null]
+
+  - name: audit_trip_rows
+    description: >
+      Row accounting per bronze file month: rows kept in silver.trips and rows
+      quarantined, per rule (one reason per row, first rule broken).
+    columns:
+      - name: source_month
+        data_tests: [not_null]
+      - name: row_outcome
+        description: kept, or the rejection rule (see int_trips_classified.sql).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - kept
+                  - missing_timestamp
+                  - pickup_outside_file_month
+                  - dropoff_before_pickup
+                  - duration_over_6h
+                  - invalid_distance
+                  - invalid_fare
+                  - invalid_total
+                  - unknown_zone
+                  - unknown_payment_type
+                  - unknown_rate_code
+                  - unknown_vendor
+                  - zero_duration
+                  - implausible_speed
+                  - negative_component
+                  - duplicate
+                  - duplicate_business_key
+      - name: row_count
+        data_tests: [not_null, positive]
+      - name: run_id
+        data_tests: [not_null]
