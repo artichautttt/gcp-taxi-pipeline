@@ -3,8 +3,11 @@
 -- Every bronze row of the month being built, with the first rejection rule it
 -- breaks (null when the row is kept) and three warning flags (kept rows only
 -- matter). Rules are checked in this order, so each rejected row is counted
--- once, under one reason. The first seven are the original rules; the new
--- ones come after them so the counts of the original ones do not move.
+-- once, under one reason. 16 rules: the 8 original ones (the first seven
+-- below, plus duplicate) and 8 added ones. The added content rules sit after
+-- the original content rules, so those counts do not move; the two duplicate
+-- rules come last (a duplicate that also breaks another rule is counted under
+-- that rule; no exact duplicate existed in January-March 2025).
 --   missing_timestamp, pickup_outside_file_month, dropoff_before_pickup,
 --   duration_over_6h, invalid_distance (null, <= 0 or > 200 mi),
 --   invalid_fare (null, < 0 or > 1000 USD), invalid_total (null, or below
