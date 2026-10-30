@@ -69,7 +69,10 @@ jobs:
       - name: Install Airflow with its official constraints
         run: |
           pip install "apache-airflow==${AIRFLOW_VERSION}" apache-airflow-providers-standard \
-            google-cloud-bigquery requests python-dotenv \
+            google-cloud-bigquery requests python-dotenv pyarrow \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
           pip install pytest==9.1.1
-      - run: python -m pytest -v tests/test_dags.py tests/test_quality_gate.py tests/test_load_raw_month.py tests/test_download_taxi_data.py tests/test_check_secrets.py
+      - run: >
+          python -m pytest -v tests/test_dags.py tests/test_quality_gate.py tests/test_bronze.py
+          tests/test_tlc_zone_trips_xml.py tests/test_idempotence_and_iam.py
+          tests/test_download_taxi_data.py tests/test_check_secrets.py

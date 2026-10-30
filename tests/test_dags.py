@@ -35,20 +35,26 @@ def test_both_dags_loaded(dagbag):
 def test_elt_chain(dagbag):
     dag = dagbag.dags["nyc_taxi_elt"]
     expected = [
-        "check_source", "download", "load_raw", "dbt_seed", "dbt_run", "dbt_test", "quality_gate",
+        "check_source", "download", "load_bronze", "dbt_seed", "dbt_run", "dbt_test", "quality_gate",
     ]
-    assert sorted(dag.task_ids) == sorted(expected)
+    loaders = ["load_bronze_zones", "load_bronze_tlc_xml"]
+    assert sorted(dag.task_ids) == sorted(expected + loaders)
     for upstream, downstream in zip(expected, expected[1:]):
         assert downstream in dag.get_task(upstream).downstream_task_ids, (upstream, downstream)
-    # the gate also receives the raw row count straight from load_raw
-    assert "load_raw" in dag.get_task("quality_gate").upstream_task_ids
+    # every bronze load runs before dbt, after the source check
+    for loader in loaders:
+        assert "check_source" in dag.get_task(loader).upstream_task_ids
+        assert "dbt_seed" in dag.get_task(loader).downstream_task_ids
+    # the gate also receives the source row count straight from load_bronze
+    assert "load_bronze" in dag.get_task("quality_gate").upstream_task_ids
 
 
-def test_elt_dbt_commands_pass_the_month(dagbag):
+def test_elt_dbt_commands_pass_the_month_and_run_id(dagbag):
     dag = dagbag.dags["nyc_taxi_elt"]
     for task_id in ("dbt_seed", "dbt_run", "dbt_test"):
         command = dag.get_task(task_id).bash_command
         assert "pipeline_month: {{ params.year * 100 + params.month }}" in command
+        assert 'run_id: "{{ run_id }}"' in command
         assert "/tmp/dbt_elt/{{ run_id" in command
     assert "--exclude source:nyc_taxi" in dag.get_task("dbt_test").bash_command
 
