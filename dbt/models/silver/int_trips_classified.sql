@@ -56,10 +56,13 @@ ranked as (
         *,
         -- ordered by (trip_id, copy_rank) so the first exact copy of a row is
         -- also the first of its business key
+        -- the key is fingerprinted: BigQuery refuses FLOAT64 columns in a
+        -- window PARTITION BY (trip_distance, total_amount)
         row_number() over (
-            partition by
+            partition by farm_fingerprint(to_json_string(struct(
                 vendor_id, pickup_datetime, dropoff_datetime, pickup_zone_id,
                 dropoff_zone_id, trip_distance, total_amount
+            )))
             order by trip_id, copy_rank
         ) as business_key_rank
     from copies
