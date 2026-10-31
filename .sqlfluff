@@ -1,6 +1,6 @@
 # SQL lint for the dbt project (run in CI). The jinja templater with dbt
 # builtins renders ref/source/config/var without a warehouse connection; the
-# two project macros are replaced by fixed values below.
+# project macros are replaced by fixed values below.
 # Scope: dbt/models and dbt/tests. The legacy sql/01-03 files (uppercase
 # style, run as-is by the nyc_taxi_pipeline DAG) are not linted.
 [sqlfluff]
@@ -17,6 +17,7 @@ apply_dbt_builtins = True
 [sqlfluff:templater:jinja:macros]
 pipeline_month = {% macro pipeline_month() %}202501{% endmacro %}
 monthly_partition = {% macro monthly_partition(field='pickup_month') %}{% endmacro %}
+current_run_id = {% macro current_run_id() %}manual__ci{% endmacro %}
 
 [sqlfluff:templater:jinja:context]
 dim_date_start = 2024-01-01

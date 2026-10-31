@@ -1,5 +1,5 @@
--- One row per raw trip record, all loaded months, renamed to snake_case.
--- No filtering here: rows are classified (kept / excluded) in the intermediate layer.
+-- One row per bronze trip record, all loaded months, renamed to snake_case.
+-- No filtering here: rows are classified (kept / rejected) in int_trips_classified.
 select
     cast(_table_suffix as int64) as source_month,
     vendorid as vendor_id,
@@ -20,5 +20,8 @@ select
     improvement_surcharge,
     total_amount,
     congestion_surcharge,
-    airport_fee
-from {{ source('tlc_raw', 'raw_yellow_tripdata') }}
+    airport_fee,
+    _source_file as source_file,
+    _loaded_at as bronze_loaded_at,
+    _run_id as ingestion_run_id
+from {{ source('bronze', 'yellow_tripdata') }}

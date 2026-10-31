@@ -28,6 +28,14 @@ load_dotenv()
 IAM_DIR = Path(__file__).resolve().parent
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "mini-siem-taxi-pipeline")
 DATASET = os.environ.get("BQ_DATASET", "nyc_taxi")
+# Medallion datasets, created once by the project owner (the SA cannot create
+# datasets). The SA gets WRITER on these and on DATASET, nothing else.
+MEDALLION_DATASETS = [
+    os.environ.get("BQ_BRONZE_DATASET", "nyc_taxi_bronze"),
+    os.environ.get("BQ_SILVER_DATASET", "nyc_taxi_silver"),
+    os.environ.get("BQ_GOLD_DATASET", "nyc_taxi_gold"),
+]
+PIPELINE_DATASETS = [DATASET, *MEDALLION_DATASETS]
 SA_ID = "taxi-pipeline"
 SA_EMAIL = f"{SA_ID}@{PROJECT_ID}.iam.gserviceaccount.com"
 ROLE_ID = "taxiPipelineJobRunner"
@@ -76,12 +84,22 @@ def project_roles_of(member: str) -> list[str]:
     return sorted(b["role"] for b in policy.get("bindings", []) if member in b.get("members", []))
 
 
-def dataset_acl_of(member: str) -> list[str]:
+def dataset_acl_of(member: str, client=None) -> dict[str, list[str]]:
+    """ACL roles of `member` on each pipeline dataset ('missing' if the dataset does not exist)."""
+    from google.api_core.exceptions import NotFound
     from google.cloud import bigquery
 
+    client = client or bigquery.Client(project=PROJECT_ID)
     email = member.split(":", 1)[1]
-    dataset = bigquery.Client(project=PROJECT_ID).get_dataset(DATASET)
-    return sorted(e.role for e in dataset.access_entries if e.entity_id == email)
+    roles = {}
+    for name in PIPELINE_DATASETS:
+        try:
+            dataset = client.get_dataset(name)
+        except NotFound:
+            roles[name] = ["missing"]
+            continue
+        roles[name] = sorted(e.role for e in dataset.access_entries if e.entity_id == email)
+    return roles
 
 
 def audit() -> int:
@@ -95,8 +113,9 @@ def audit() -> int:
     print(f"[audit] ADC credential    : {cred_type}")
     print(f"[audit] pipeline identity : {member}")
     print(f"[audit] project roles     : {project_roles or '-'}")
-    print(f"[audit] {DATASET + ' ACL':<18}: {dataset_roles or '-'} "
-          "(+ inherited via projectOwners/projectWriters special groups)")
+    for name, roles in dataset_roles.items():
+        print(f"[audit] {name + ' ACL':<18}: {roles or '-'} "
+              "(+ inherited via projectOwners/projectWriters special groups)")
     print(f"[audit] service accounts  : {[sa['email'] for sa in sa_list] or 'none'}")
 
     findings = []
@@ -104,9 +123,10 @@ def audit() -> int:
     if admin:
         findings.append(f"pipeline identity holds project admin role(s) {admin}: "
                         "can change IAM, delete any dataset, read every dataset")
-    if set(dataset_roles) & DATASET_ADMIN_ACL:
-        findings.append(f"pipeline identity is OWNER of dataset {DATASET}: "
-                        "can change its access list and delete it")
+    for name, roles in dataset_roles.items():
+        if set(roles) & DATASET_ADMIN_ACL:
+            findings.append(f"pipeline identity is OWNER of dataset {name}: "
+                            "can change its access list and delete it")
     if cred_type == "service_account":
         findings.append("ADC uses a service account KEY file: long-lived secret on disk, "
                         "prefer impersonation (see README)")
@@ -141,25 +161,32 @@ def steps(operator: str) -> list[tuple[str, list[str]]]:
     ]
 
 
-def grant_dataset_writer() -> None:
+def grant_dataset_writer(client=None, names=None) -> list[str]:
+    """Adds WRITER for the SA on each pipeline dataset (idempotent).
+    Returns the datasets actually changed."""
     from google.cloud import bigquery
 
-    client = bigquery.Client(project=PROJECT_ID)
-    dataset = client.get_dataset(DATASET)
-    entry = bigquery.AccessEntry(role="WRITER", entity_type="userByEmail", entity_id=SA_EMAIL)
-    if entry in dataset.access_entries:
-        print(f"[skip] {SA_EMAIL} already WRITER on {DATASET}")
-        return
-    dataset.access_entries = [*dataset.access_entries, entry]
-    client.update_dataset(dataset, ["access_entries"])
-    print(f"[done] {SA_EMAIL} WRITER (= roles/bigquery.dataEditor) on {PROJECT_ID}:{DATASET}")
+    client = client or bigquery.Client(project=PROJECT_ID)
+    changed = []
+    for name in names or PIPELINE_DATASETS:
+        dataset = client.get_dataset(name)
+        entry = bigquery.AccessEntry(role="WRITER", entity_type="userByEmail", entity_id=SA_EMAIL)
+        if entry in dataset.access_entries:
+            print(f"[skip] {SA_EMAIL} already WRITER on {name}")
+            continue
+        dataset.access_entries = [*dataset.access_entries, entry]
+        client.update_dataset(dataset, ["access_entries"])
+        changed.append(name)
+        print(f"[done] {SA_EMAIL} WRITER (= roles/bigquery.dataEditor) on {PROJECT_ID}:{name}")
+    return changed
 
 
 def plan(operator: str) -> None:
     for desc, args in steps(operator):
         shown = [f'"{a}"' if " " in a else a for a in args]
         print(f"# {desc}\ngcloud {' '.join(shown)}\n")
-    print(f"# grant read/write on dataset {DATASET} only (dataset access list, via Python client)")
+    print(f"# grant read/write on datasets {', '.join(PIPELINE_DATASETS)} only "
+          "(dataset access lists, via Python client)")
     print(f"#   AccessEntry(role='WRITER', entity_type='userByEmail', entity_id='{SA_EMAIL}')\n")
     print("# then point ADC at the SA (short-lived tokens, no key file):")
     print(f"gcloud auth application-default login --impersonate-service-account={SA_EMAIL}")

@@ -1,22 +1,33 @@
 """
-ELT pipeline for one month of NYC Yellow Taxi trips, into the dbt star schema:
+Medallion ELT pipeline for one month of NYC Yellow Taxi trips:
 
-    check_source -> download -> load_raw -> dbt_seed -> dbt_run -> dbt_test -> quality_gate
+    check_source -> download -> load_bronze ----------+
+    check_source -> load_bronze_zones ----------------+-> dbt_seed -> dbt_run -> dbt_test -> quality_gate
+    check_source -> load_bronze_tlc_xml --------------+
 
 - check_source: HTTP HEAD on the public NYC TLC file, fails fast if the month
   is not published.
 - download: ingestion/download_taxi_data.py (skipped if the file is local).
-- load_raw: one table per month, raw_yellow_tripdata_YYYYMM, WRITE_TRUNCATE.
-- dbt_seed / dbt_run: lookups, then staging -> intermediate -> marts for the
-  month (fct_trips and audit_trip_rows replace their YYYYMM partition).
-- dbt_test: tests of the star schema (the legacy source tests belong to the
-  nyc_taxi_pipeline DAG).
-- quality_gate: quality/quality_gate.py, fails on a failed dbt test or when
-  raw rows loaded != rows audited, or kept rows != rows in fct_trips.
+- load_bronze*: ingestion/bronze.py, every source as received plus _source,
+  _source_file, _loaded_at, _run_id, one table per month (WRITE_TRUNCATE);
+  fails if the bronze table does not hold exactly the rows of its source.
+  Bronze tables: yellow_tripdata_YYYYMM (Parquet), taxi_zone_lookup (CSV),
+  tlc_zone_trips_YYYYMM (XML, NYC Open Data c5iv-bn4s, informative control).
+- dbt_seed / dbt_run: referentials, then silver (trips, trips_quarantine,
+  audit_trip_rows) and gold (star schema, aggregates, TLC reconciliation) for
+  the month; incremental models replace their YYYYMM partition only.
+- dbt_test: tests of the medallion models (the legacy source tests belong to
+  the nyc_taxi_pipeline DAG).
+- quality_gate: quality/quality_gate.py, appends the run to
+  silver.quality_report, then fails on a failed dbt test or when
+  source != bronze, bronze != silver + quarantine, or the quarantine was not
+  rebuilt by this run.
 
-Idempotent: re-running a month replaces its raw table and its partitions, it
-never appends. Authentication: ADC only (gcloud config mounted read-only), no
-service account key.
+The Airflow run_id is the run id of every layer: bronze _run_id, quarantine
+run_id, quality_report run_id. Idempotent: re-running a month replaces its
+bronze tables and its partitions, it never appends (except quality_report,
+one entry per run by design). Authentication: ADC only (gcloud config
+mounted read-only), no service account key.
 """
 import os
 import sys
@@ -33,14 +44,23 @@ TLC_BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 # its own dbt test (and parallel runs cannot overwrite each other).
 DBT_TARGET = "/tmp/dbt_elt/{{ run_id | replace(':', '_') | replace('+', '_') }}"
 PIPELINE_MONTH = "{{ params.year * 100 + params.month }}"
+RUN_ID = "{{ run_id }}"
 
 
 def _dbt(command: str) -> str:
     return (
-        f"{DBT_BIN} {command} --vars '{{pipeline_month: {PIPELINE_MONTH}}}' "
+        f"{DBT_BIN} {command} --vars '{{pipeline_month: {PIPELINE_MONTH}, run_id: \"{RUN_ID}\"}}' "
         f"--project-dir {PIPELINE_DIR}/dbt --profiles-dir {PIPELINE_DIR}/dbt "
         f"--target-path {DBT_TARGET} --log-path {DBT_TARGET}/logs --no-use-colors"
     )
+
+
+def _ingestion() -> None:
+    sys.path.insert(0, str(PIPELINE_DIR / "ingestion"))
+
+
+def _run_id() -> str:
+    return get_current_context()["run_id"]
 
 
 @dag(
@@ -56,7 +76,7 @@ def _dbt(command: str) -> str:
         "year": Param(2025, type="integer", minimum=2024, maximum=2026),
         "month": Param(1, type="integer", minimum=1, maximum=12),
     },
-    tags=["nyc_taxi", "bigquery", "dbt", "elt"],
+    tags=["nyc_taxi", "bigquery", "dbt", "elt", "medallion"],
 )
 def nyc_taxi_elt():
     @task
@@ -73,46 +93,61 @@ def nyc_taxi_elt():
 
     @task
     def download(month_info: dict) -> str:
-        sys.path.insert(0, str(PIPELINE_DIR / "ingestion"))
+        _ingestion()
         from download_taxi_data import download_month
 
         return str(download_month(month_info["year"], month_info["month"]))
 
     @task
-    def load_raw(month_info: dict, local_path: str) -> int:
-        sys.path.insert(0, str(PIPELINE_DIR / "ingestion"))
-        from load_raw_month import raw_table_name
-        from load_to_bigquery import load_file
+    def load_bronze(month_info: dict, local_path: str) -> dict:
+        _ingestion()
+        from bronze import load_trips_month
 
-        return load_file(
-            Path(local_path),
-            os.environ["GCP_PROJECT_ID"],
-            os.environ.get("BQ_DATASET", "nyc_taxi"),
-            raw_table_name(month_info["year"], month_info["month"]),
-        )
+        # local_path orders this task after download; load_trips_month finds the file again
+        print(f"[bronze] {local_path}")
+        return load_trips_month(month_info["year"], month_info["month"], _run_id(),
+                                os.environ["GCP_PROJECT_ID"])
+
+    @task
+    def load_bronze_zones(month_info: dict) -> dict:
+        _ingestion()
+        from bronze import load_zone_lookup
+
+        return load_zone_lookup(_run_id(), os.environ["GCP_PROJECT_ID"])
+
+    @task
+    def load_bronze_tlc_xml(month_info: dict) -> dict:
+        _ingestion()
+        from tlc_zone_trips_xml import load_tlc_zone_trips
+
+        return load_tlc_zone_trips(month_info["year"], month_info["month"], _run_id(),
+                                   os.environ["GCP_PROJECT_ID"])
 
     dbt_seed = BashOperator(task_id="dbt_seed", bash_command=_dbt("seed"))
     dbt_run = BashOperator(task_id="dbt_run", bash_command=_dbt("run"))
     dbt_test = BashOperator(task_id="dbt_test", bash_command=_dbt("test --exclude source:nyc_taxi"))
 
     @task
-    def quality_gate(month_info: dict, raw_rows_loaded: int) -> dict:
+    def quality_gate(month_info: dict, bronze: dict) -> dict:
         sys.path.insert(0, str(PIPELINE_DIR / "quality"))
         from quality_gate import run_gate
 
-        run_id = get_current_context()["run_id"].replace(":", "_").replace("+", "_")
+        run_id = _run_id()
+        target = run_id.replace(":", "_").replace("+", "_")
         return run_gate(
-            Path("/tmp/dbt_elt") / run_id / "run_results.json",
-            raw_rows_loaded,
+            Path("/tmp/dbt_elt") / target / "run_results.json",
+            bronze["source_rows"],
             month_info["pipeline_month"],
+            run_id,
             os.environ["GCP_PROJECT_ID"],
-            os.environ.get("BQ_DATASET", "nyc_taxi"),
         )
 
     month_info = check_source()
-    raw_rows = load_raw(month_info, download(month_info))
-    gate = quality_gate(month_info, raw_rows)
-    raw_rows >> dbt_seed >> dbt_run >> dbt_test >> gate
+    bronze = load_bronze(month_info, download(month_info))
+    zones = load_bronze_zones(month_info)
+    tlc_xml = load_bronze_tlc_xml(month_info)
+    gate = quality_gate(month_info, bronze)
+    [bronze, zones, tlc_xml] >> dbt_seed >> dbt_run >> dbt_test >> gate
 
 
 nyc_taxi_elt()

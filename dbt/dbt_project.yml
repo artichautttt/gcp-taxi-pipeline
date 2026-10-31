@@ -1,17 +1,19 @@
 # dbt project, two independent parts:
 #
 # 1. Legacy quality gate (models/sources.yml, source `nyc_taxi`): tests the
-#    tables built by sql/01-03 (trips_clean, daily_kpis). The nyc_taxi_pipeline
-#    DAG runs only these tests (`dbt test --select source:nyc_taxi`).
+#    tables built by sql/01-03 (trips_clean, daily_kpis) in dataset nyc_taxi.
+#    The nyc_taxi_pipeline DAG runs only these tests (`dbt test --select source:nyc_taxi`).
 #
-# 2. ELT star schema (models/staging, intermediate, marts), built from the
-#    monthly raw tables raw_yellow_tripdata_YYYYMM (source `tlc_raw`):
-#        stg_yellow_trips -> int_trips_classified -> fct_trips + audit_trip_rows
-#        seeds -> dim_zones, dim_payment_type, dim_rate_code ; dim_date generated
-#    One month per run: dbt run --vars '{pipeline_month: 202501}'.
+# 2. Medallion pipeline, one dataset per layer (BQ_*_DATASET, defaults below):
+#      bronze  nyc_taxi_bronze  sources as received + ingestion columns
+#              (written by ingestion/bronze.py, not by dbt)
+#      silver  nyc_taxi_silver  models/silver + seeds: typed, checked rows
+#              (trips), rejected rows (trips_quarantine), row accounting
+#      gold    nyc_taxi_gold    models/gold: star schema and aggregates
+#    One month per run: dbt run --vars '{pipeline_month: 202501, run_id: "..."}'.
 #
-# Everything lands in the single dataset the service account may write to
-# (BQ_DATASET, default nyc_taxi); layers are told apart by prefix.
+# The profile's dataset (BQ_DATASET, nyc_taxi) only serves the legacy part:
+# macros/generate_schema_name.sql writes each layer to its own dataset.
 name: nyc_taxi
 version: "1.0.0"
 config-version: 2
@@ -30,18 +32,26 @@ vars:
   # pipeline_month: 202501
   dim_date_start: "2024-01-01"
   dim_date_end: "2026-12-31"
+  # Run id written on quarantined rows; default: dbt's invocation_id.
+  # run_id: manual__2026-10-30T10:00:00+00:00
+  # TLC XML control (gold.tlc_zone_reconciliation, docs/qualite.md): a zone
+  # is flagged when |bronze pickups - TLC pickups| > tlc_alert_gap_pct % of the
+  # TLC count, for zones with at least tlc_alert_min_trips trips on one side.
+  tlc_alert_gap_pct: 10
+  tlc_alert_min_trips: 1000
 
 models:
   nyc_taxi:
-    staging:
+    silver:
+      +schema: "{{ env_var('BQ_SILVER_DATASET', 'nyc_taxi_silver') }}"
       +materialized: view
-    intermediate:
-      +materialized: ephemeral
-    marts:
+    gold:
+      +schema: "{{ env_var('BQ_GOLD_DATASET', 'nyc_taxi_gold') }}"
       +materialized: table
 
 seeds:
   nyc_taxi:
+    +schema: "{{ env_var('BQ_SILVER_DATASET', 'nyc_taxi_silver') }}"
     taxi_zone_lookup:
       +column_types:
         location_id: int64

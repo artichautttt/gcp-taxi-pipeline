@@ -1,0 +1,22 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Bronze dataset, written by ingestion/bronze.py (not by dbt): every source
+      as received, plus _source, _source_file, _loaded_at and _run_id on each
+      row. Monthly sources have one table per month (WRITE_TRUNCATE), read
+      through a BigQuery wildcard; _TABLE_SUFFIX gives the month.
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: "{{ env_var('BQ_BRONZE_DATASET', 'nyc_taxi_bronze') }}"
+    tables:
+      - name: yellow_tripdata
+        identifier: "yellow_tripdata_*"
+        description: NYC TLC Yellow Taxi trip records (Parquet), all loaded months.
+      - name: taxi_zone_lookup
+        description: Official TLC taxi_zone_lookup.csv, every column as a string.
+      - name: tlc_zone_trips
+        identifier: "tlc_zone_trips_*"
+        description: >
+          NYC Open Data c5iv-bn4s (XML), Yellow Taxi pickups and drop-offs per
+          zone and month published by the TLC. Every field as a string.

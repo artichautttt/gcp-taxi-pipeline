@@ -6,7 +6,8 @@
 #
 # Principle: the pipeline runs as a dedicated service account that can
 #   - run BigQuery jobs in the project (nothing else at project level)
-#   - read/write tables in the nyc_taxi dataset only
+#   - read/write tables in the nyc_taxi, nyc_taxi_bronze, nyc_taxi_silver
+#     and nyc_taxi_gold datasets only
 # and has NO project admin rights (no owner/editor, no IAM changes, no
 # dataset creation/deletion, no access to any other dataset).
 # No service account key is ever created: the human operator impersonates
@@ -34,13 +35,25 @@ bindings:
     role: projects/mini-siem-taxi-pipeline/roles/taxiPipelineJobRunner
     member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
 
-  # 2. Dataset level: read/write tables of nyc_taxi only.
+  # 2. Dataset level: read/write tables of the four pipeline datasets only
+  #    (nyc_taxi for the legacy chain, nyc_taxi_bronze / _silver / _gold for
+  #    the medallion pipeline). The three medallion datasets are created once
+  #    by the project owner: the SA cannot create datasets.
   #    Most restrictive predefined role that allows load jobs with
   #    WRITE_TRUNCATE and CREATE OR REPLACE TABLE. Stored in the dataset
   #    access list, where BigQuery maps it to the basic "WRITER" role.
   #    Does NOT include datasets.create/delete, datasets.setIamPolicy
   #    or access to other datasets.
   - resource: bigquery dataset mini-siem-taxi-pipeline:nyc_taxi
+    role: roles/bigquery.dataEditor   # shown as WRITER in the dataset ACL
+    member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+  - resource: bigquery dataset mini-siem-taxi-pipeline:nyc_taxi_bronze
+    role: roles/bigquery.dataEditor   # shown as WRITER in the dataset ACL
+    member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+  - resource: bigquery dataset mini-siem-taxi-pipeline:nyc_taxi_silver
+    role: roles/bigquery.dataEditor   # shown as WRITER in the dataset ACL
+    member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
+  - resource: bigquery dataset mini-siem-taxi-pipeline:nyc_taxi_gold
     role: roles/bigquery.dataEditor   # shown as WRITER in the dataset ACL
     member: serviceAccount:taxi-pipeline@mini-siem-taxi-pipeline.iam.gserviceaccount.com
 
@@ -58,6 +71,14 @@ bindings:
 #                                  jobs.create, tables.create, tables.update,
 #                                  tables.updateData, tables.getData
 #   spark/compare_with_bigquery.py jobs.create, tables.getData
+#   ingestion/bronze.py (load jobs WRITE_TRUNCATE / WRITE_APPEND)
+#                                  jobs.create, tables.create, tables.update,
+#                                  tables.updateData, tables.get
+#   dbt run (views, tables, insert_overwrite by partition copy)
+#                                  jobs.create, tables.create, tables.update,
+#                                  tables.updateData, tables.getData, tables.get
+#   quality/quality_gate.py        jobs.create, tables.getData, plus the
+#                                  load job appending quality_report
 #
 # Out of scope for the SA (kept on the project owner, one-off admin tasks):
 #   dataset creation (`bq mk`), dataset deletion (`bq rm -r`), enabling APIs,

@@ -1,0 +1,107 @@
+version: 2
+
+models:
+  - name: fct_trips
+    description: >
+      Star-schema fact table, one row per trip of silver.trips (view, no copy).
+      Rejected rows are not here: see silver.trips_quarantine.
+    columns:
+      - name: pickup_date
+        description: Pickup day, key to dim_date.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: pickup_zone_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_zones')
+                field: zone_id
+      - name: dropoff_zone_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_zones')
+                field: zone_id
+      - name: payment_type_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_payment_type')
+                field: payment_type_id
+      - name: rate_code_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_rate_code')
+                field: rate_code_id
+
+  - name: agg_daily_kpis
+    description: Daily indicators per pickup day (trips, revenue, averages).
+    columns:
+      - name: pickup_date
+        data_tests: [unique, not_null]
+      - name: trip_count
+        data_tests: [not_null, positive]
+
+  - name: agg_zone_monthly
+    description: Pickups and drop-offs per zone and month.
+    columns:
+      - name: zone_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zones')
+                field: zone_id
+
+  - name: tlc_zone_reconciliation
+    description: >
+      Informative control: pickups per zone and month, bronze and silver
+      against the counts the TLC publishes (XML, NYC Open Data c5iv-bn4s).
+      is_alert marks the gaps above the threshold (vars tlc_alert_gap_pct,
+      tlc_alert_min_trips). Never blocking.
+    columns:
+      - name: month
+        data_tests: [not_null]
+      - name: zone_id
+        data_tests: [not_null]
+
+  - name: dim_zones
+    description: NYC taxi zones (265 rows, 2 unknown, 3 airports).
+    columns:
+      - name: zone_id
+        data_tests: [unique, not_null]
+      - name: borough
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [Bronx, Brooklyn, EWR, Manhattan, Queens, Staten Island, Unknown]
+
+  - name: dim_payment_type
+    columns:
+      - name: payment_type_id
+        data_tests: [unique, not_null]
+      - name: payment_type_name
+        data_tests: [not_null]
+
+  - name: dim_rate_code
+    columns:
+      - name: rate_code_id
+        data_tests: [unique, not_null]
+      - name: rate_code_name
+        data_tests: [not_null]
+
+  - name: dim_date
+    description: Calendar from var dim_date_start to dim_date_end.
+    columns:
+      - name: date_day
+        data_tests: [unique, not_null]
+      - name: weekday_name
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]

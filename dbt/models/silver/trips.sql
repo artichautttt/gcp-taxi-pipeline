@@ -6,9 +6,10 @@
     on_schema_change='fail'
 ) }}
 
--- Fact table, one row per kept trip. Grain: trip. Rebuilt one month at a time:
--- a run replaces the pickup_month partition of --vars pipeline_month and
--- leaves every other month untouched.
+-- Silver trips: one row per bronze row that passes every rejection rule,
+-- typed and renamed, with the three warning flags. Rebuilt one month at a
+-- time: a run replaces the pickup_month partition of --vars pipeline_month and
+-- leaves every other month untouched (copy job, no DML).
 
 select
     trip_id,
@@ -34,6 +35,9 @@ select
     improvement_surcharge,
     congestion_surcharge,
     airport_fee,
-    total_amount
+    total_amount,
+    flag_unknown_zone,
+    flag_passenger_count,
+    flag_short_trip
 from {{ ref('int_trips_classified') }}
 where exclusion_reason is null
