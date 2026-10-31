@@ -1,14 +1,26 @@
 # GCP Taxi Pipeline
 
-> Pipeline ELT NYC Yellow Taxi sur BigQuery Sandbox, à 0 € : DAG Airflow 3,
-> schéma en étoile dbt incrémental par mois, contrôle qualité de réconciliation
-> et CI GitHub Actions sans secret. Exécuté en local (Docker) uniquement.
+> Pipeline ELT NYC Yellow Taxi sur BigQuery Sandbox, à 0 € : architecture
+> médaillon Bronze / Silver / Gold, ingestion Parquet, CSV et XML, quarantaine
+> des lignes rejetées, rapport de qualité par run, DAG Airflow 3, dbt
+> incrémental par mois et CI GitHub Actions sans secret. Exécuté en local
+> (Docker) uniquement.
 
 Pipeline data engineering sur Google Cloud Platform, sans compte de facturation
 (BigQuery Sandbox) et sans clé de service account : ingestion des fichiers
-publics NYC TLC, chargement brut dans BigQuery, modélisation dbt, tests,
-orchestration Airflow, plus une voie PySpark comparée à BigQuery et un
-nettoyage Excel VBA du référentiel des zones.
+publics NYC TLC et d'un jeu XML NYC Open Data, couches Bronze / Silver / Gold
+construites et testées par dbt, contrôle de réconciliation, orchestration
+Airflow, plus une voie PySpark comparée à BigQuery et un nettoyage Excel VBA
+du référentiel des zones.
+
+Documentation détaillée :
+- [docs/exploitation.md](docs/exploitation.md) : lancer, relancer un mois,
+  reprise sur erreur, ajouter une source, traiter la quarantaine,
+  reconstruction après expiration ;
+- [docs/modele_de_donnees.md](docs/modele_de_donnees.md) : colonnes de chaque
+  table, par couche ;
+- [docs/qualite.md](docs/qualite.md) : chaque règle de rejet et d'alerte, sa
+  justification et ses comptes mesurés.
 
 ## Problème
 
@@ -27,47 +39,115 @@ impossibles, totaux incohérents. Le pipeline doit :
 
 ```mermaid
 flowchart LR
-    TLC["NYC TLC<br/>Parquet mensuel"] -->|"check_source (HEAD)<br/>download (.part, taille vérifiée)"| PQ["data/*.parquet<br/>(local)"]
-    PQ -->|"load_raw<br/>WRITE_TRUNCATE"| RAW["raw_yellow_tripdata_AAAAMM<br/>(une table par mois)"]
-
-    subgraph BQ["BigQuery Sandbox, dataset nyc_taxi"]
-        RAW --> STG["stg_yellow_trips<br/>(vue)"]
-        STG --> INT["int_trips_classified<br/>(éphémère : règle d'exclusion par ligne)"]
-        INT --> FCT["fct_trips<br/>(incrémental, partition AAAAMM)"]
-        INT --> AUD["audit_trip_rows<br/>(gardées / écartées par règle)"]
-        SEEDS["seeds : zones, paiements,<br/>codes tarifaires"] --> DIMS["dim_zones, dim_payment_type,<br/>dim_rate_code, dim_date"]
-        DIMS -.->|relationships| FCT
+    subgraph SRC["Sources publiques"]
+        TLC["NYC TLC<br/>Parquet mensuel"]
+        ZCSV["NYC TLC<br/>taxi_zone_lookup.csv"]
+        XML["NYC Open Data c5iv-bn4s<br/>XML, trajets par zone"]
     end
 
-    FCT --> GATE{"quality_gate<br/>dbt test 41/41<br/>brut = audit, gardées = fct"}
-    AUD --> GATE
-
-    subgraph LEGACY["Chaîne historique (inchangée)"]
-        PQ -->|"load_to_bigquery.py"| YRAW["yellow_tripdata_raw"]
-        YRAW -->|"sql/01-03"| TC["trips_clean, daily_kpis"]
-        TC --> LOOKER["Looker Studio"]
-        TC --> SPARK["spark/compare_with_bigquery.py"]
+    subgraph BRONZE["nyc_taxi_bronze : tel que reçu + _source, _source_file, _loaded_at, _run_id"]
+        BT["yellow_tripdata_AAAAMM"]
+        BZ["taxi_zone_lookup"]
+        BX["tlc_zone_trips_AAAAMM"]
+        LOG["ingestion_log<br/>(lignes source = lignes chargées)"]
     end
+
+    subgraph SILVER["nyc_taxi_silver : nettoyé, typé, contrôlé"]
+        CLS["int_trips_classified<br/>16 règles de rejet, 3 alertes"]
+        TR["trips<br/>(partition AAAAMM)"]
+        Q["trips_quarantine<br/>(ligne brute + motif + run_id)"]
+        AUD["audit_trip_rows"]
+        QR["quality_report<br/>(une série de lignes par run)"]
+    end
+
+    subgraph GOLD["nyc_taxi_gold : prêt pour l'analyse"]
+        FCT["fct_trips (vue)<br/>dim_zones, dim_date,<br/>dim_payment_type, dim_rate_code"]
+        AGG["agg_daily_kpis<br/>agg_zone_monthly"]
+        REC["tlc_zone_reconciliation<br/>(alerte si écart > 10 %)"]
+    end
+
+    TLC -->|"download (.part, taille vérifiée)<br/>pyarrow, WRITE_TRUNCATE"| BT
+    ZCSV --> BZ
+    XML -->|"XML parsé, DTD refusée"| BX
+    BT --> CLS
+    BZ --> CLS
+    CLS -->|gardées| TR
+    CLS -->|rejetées| Q
+    CLS --> AUD
+    TR --> FCT
+    TR --> AGG
+    BX --> REC
+    AGG --> REC
+    AUD --> GATE{"quality_gate<br/>source = Bronze<br/>Silver + quarantaine = Bronze"}
+    TR --> GATE
+    Q --> GATE
+    GATE --> QR
 ```
 
 Deux DAG Airflow, lancés à la main (`schedule=None`) :
-- `nyc_taxi_elt` (nouveau) : `check_source → download → load_raw → dbt_seed →
-  dbt_run → dbt_test → quality_gate`, un mois par run, paramètres `year` /
-  `month`. Détails : [Schéma en étoile dbt et DAG `nyc_taxi_elt`](#schéma-en-étoile-dbt-et-dag-nyc_taxi_elt).
-- `nyc_taxi_pipeline` (historique) : chargement dans `yellow_tripdata_raw`,
-  `sql/01-03`, puis les 20 tests dbt de ces tables. Il alimente le dashboard
-  Looker Studio et la comparaison PySpark.
+- `nyc_taxi_elt` (médaillon) : `check_source → download → load_bronze,
+  load_bronze_zones, load_bronze_tlc_xml → dbt_seed → dbt_run → dbt_test →
+  quality_gate`, un mois par run, paramètres `year` / `month`. Le `run_id`
+  Airflow est écrit dans chaque couche (Bronze `_run_id`, quarantaine,
+  audit, rapport). Détails :
+  [Médaillon dbt et DAG `nyc_taxi_elt`](#médaillon-dbt-et-dag-nyc_taxi_elt).
+- `nyc_taxi_pipeline` (historique, dataset `nyc_taxi`) : chargement dans
+  `yellow_tripdata_raw`, `sql/01-03`, puis les 20 tests dbt de ces tables. Il
+  alimente le dashboard Looker Studio et la comparaison PySpark.
 
 Pas de Cloud Storage : GCS exige un compte de facturation lié, même dans
-l'offre gratuite. Le chargement part donc d'un fichier Parquet local.
+l'offre gratuite. Le chargement part donc d'un fichier local, converti en
+Parquet par pyarrow avec les colonnes d'ingestion.
+
+**Pas de source PostgreSQL** : les sources publiques utilisées sont publiées
+en Parquet, CSV et XML ; aucune base PostgreSQL n'est simulée.
 
 ## Résultats mesurés
 
 Toutes les mesures viennent d'exécutions locales (Docker sur une machine
-Windows) contre la Sandbox BigQuery. Une seule mesure par cas : les durées
-sont un ordre de grandeur.
+Windows) contre la Sandbox BigQuery, sous l'identité du compte de service
+`taxi-pipeline` (impersonation). Une seule mesure par cas : les durées sont un
+ordre de grandeur. Les tables expirent après 60 jours ; ces chiffres restent
+ici, datés, pour rester vérifiables (reconstruction : `scripts/rebuild_after_expiry.sh`).
 
-**Schéma en étoile, DAG `nyc_taxi_elt`, 2026-10-26** :
+**Médaillon, DAG `nyc_taxi_elt`, 2026-10-30 (janvier) et 2026-10-31 (février,
+mars, relance de janvier)** :
+
+| Mois | Source (Parquet) | Bronze | `silver.trips` | Quarantaine | Taux de rejet | Zones en alerte XML | Tests dbt | Contrôle qualité | Durée |
+|---|---:|---:|---:|---:|---:|---:|---|---|---:|
+| 2025-01 | 3 475 226 | 3 475 226 | 3 250 924 | 224 302 | 6,45 % | 28 | 60 PASS + 1 WARN / 61 | passé | 221 s |
+| 2025-02 | 3 577 543 | 3 577 543 | 3 304 922 | 272 621 | 7,62 % | 30 | 60 PASS + 1 WARN / 61 | passé | 315 s |
+| 2025-03 | 4 145 257 | 4 145 257 | 3 825 380 | 319 877 | 7,72 % | 43 | 60 PASS + 1 WARN / 61 | passé | 548 s |
+| **Total** | **11 198 026** | **11 198 026** | **10 381 226** | **816 800** | **7,29 %** | | | | |
+
+- Silver + quarantaine = Bronze = source, chaque mois, à la ligne près
+  (contrôle bloquant du `quality_gate` et test dbt).
+- Quarantaine par motif sur 3 mois : tarif invalide 487 656, distance invalide
+  294 767, durée nulle 27 063, durée > 6 h 3 709, vitesse > 100 mph 2 133,
+  total < tarif + pourboire 777, composant négatif 311, dropoff avant pickup
+  298, pickup hors du mois du fichier 86. Sept règles à 0 (horodatage
+  manquant, zone, paiement, code tarifaire ou fournisseur inconnu, doublons
+  exacts ou de clé métier). Détail par mois : [docs/qualite.md](docs/qualite.md).
+- Alertes gardées en Silver (janvier / février / mars) : zone inconnue
+  25 485 / 22 419 / 24 987, nombre de passagers nul, 0 ou > 6
+  436 475 / 649 069 / 747 163, trajet de moins de 60 s 8 839 / 8 452 / 10 790.
+- **Idempotence** : instantané des trois mois, relance complète de janvier
+  (237 s), comparaison : `[idempotence] OK: no difference over 3 month(s)`.
+  Lignes Bronze, lignes Silver, quarantaine par motif et empreinte
+  (`BIT_XOR` des `trip_id`) de Silver et de la quarantaine identiques, pour
+  janvier comme pour février et mars.
+- **Contrôle XML** (informatif, non bloquant) : seuil 10 % d'écart et 1 000
+  trajets. Les 1 WARN dbt sont ce contrôle. Les zones 264 et 265 (« Unknown »)
+  sont en alerte chaque mois, la TLC ne les publiant pas.
+- **Stockage, 2026-10-31** : 5,81 Go sur 10 Go (Bronze 2,74 Go, Silver
+  2,14 Go, Gold < 1 Mo, chaîne historique `nyc_taxi` 0,94 Go).
+- Durées : commande `airflow dags test` complète, une mesure par mois ; elles
+  ne suivent pas le volume (mars 548 s pour 16 % de lignes de plus que
+  février).
+
+**Historique : schéma en étoile, DAG `nyc_taxi_elt`, 2026-10-26** (dataset
+unique `nyc_taxi`, 8 règles d'exclusion ; remplacé par le médaillon, tables
+supprimées le 2026-10-31) :
 
 | Mois | Durée du run | Lignes brutes | Dans `fct_trips` | Écartées | Tests dbt | Contrôle qualité |
 |---|---|---|---|---|---|---|
@@ -77,8 +157,8 @@ sont un ordre de grandeur.
 
 - Fichiers déjà présents en local pour ces trois runs (téléchargement sauté).
   Un run de mars téléchargement compris : 211 s.
-- Relancer un mois redonne les mêmes comptes à la ligne près, sans toucher aux
-  autres mois (vérifié sur les trois mois).
+- Relancer un mois redonnait les mêmes comptes à la ligne près, sans toucher
+  aux autres mois (vérifié sur les trois mois).
 - `fct_trips` : 10 410 733 trajets sur 3 mois, 1,87 Go. Dataset complet
   (toutes tables, deux chaînes) : 4,38 Go, sous les 10 Go de la Sandbox.
 - Principales exclusions en janvier : tarif invalide 129 637, distance
@@ -86,9 +166,15 @@ sont un ordre de grandeur.
   d'un autre mois 22, dropoff avant pickup 124. Aucun horodatage manquant,
   aucun doublon exact.
 
+Du schéma en étoile au médaillon, les 8 anciennes règles donnent les mêmes
+comptes ; les 8 règles ajoutées écartent 2 097 lignes de plus en janvier
+(durée nulle 1 232, vitesse > 100 mph 764, composant négatif 101), 5 104 en
+février et 22 306 en mars. D'où `silver.trips` = 3 250 924 / 3 304 922 /
+3 825 380 contre 3 253 021 / 3 310 026 / 3 847 686 dans l'ancien `fct_trips`.
+
 **CI GitHub Actions** (sans secret) : lint SQL, `dbt parse`, `dbt compile` et
-pytest, dont l'import réel des deux DAG. Les tests
-dbt, eux, tournent en local contre BigQuery (voir
+pytest, dont l'import réel des deux DAG. Les tests dbt, eux, tournent en
+local contre BigQuery (voir
 [Ce que vérifie la CI](#ce-que-vérifie-la-ci-et-ce-quelle-ne-vérifie-pas)).
 
 **Chaîne historique, 2026-10-16** (janvier 2025, DAG `nyc_taxi_pipeline`, puis
@@ -103,73 +189,90 @@ dbt, eux, tournent en local contre BigQuery (voir
 | `daily_kpis` BigQuery vs PySpark | 5/5 contrôles OK, tolérance 0,5 % (revenu total 87 219 707,12 $ des deux côtés) |
 | Tests dbt | 20/20 PASS (relancés le 2026-10-26 : 20/20) |
 
-Les deux chaînes n'appliquent pas exactement les mêmes règles (la nouvelle
-écarte aussi les trajets hors du mois du fichier et les totaux incohérents) :
-3 253 304 et 3 253 021 lignes gardées pour janvier ne sont pas comparables
-au trajet près.
+Les deux chaînes n'appliquent pas exactement les mêmes règles (le médaillon
+écarte aussi les trajets hors du mois du fichier, les totaux incohérents, les
+durées nulles, les vitesses impossibles et les composants négatifs) :
+3 253 304 lignes gardées pour janvier par la chaîne historique et 3 250 924
+par le médaillon ne sont pas comparables au trajet près.
 
 ## Choix de conception
 
 - **BigQuery Sandbox, sans facturation.** Coût nul garanti
   (`billingEnabled: False`), au prix des limites listées plus bas.
+- **Un dataset par couche** (`nyc_taxi_bronze`, `nyc_taxi_silver`,
+  `nyc_taxi_gold`), créés une fois par le propriétaire du projet : le compte
+  de service n'a que `WRITER` sur ces trois datasets et sur `nyc_taxi`, et ne
+  peut pas créer de dataset. Le nom des datasets se change par variable
+  d'environnement (`BQ_BRONZE_DATASET`, `BQ_SILVER_DATASET`, `BQ_GOLD_DATASET`).
+- **Bronze écrit par Python, pas par dbt.** Chaque source est chargée telle
+  que reçue, plus quatre colonnes d'ingestion (`_source`, `_source_file`,
+  `_loaded_at`, `_run_id`). Le chargement compare les lignes de la source aux
+  lignes de la table et l'écrit dans `ingestion_log` ; un écart fait échouer
+  la tâche (`BronzeCountError`).
+- **Quarantaine plutôt que filtre.** Une ligne rejetée n'est ni supprimée ni
+  corrigée : elle part dans `trips_quarantine`, colonnes d'origine, avec la
+  première règle enfreinte et le `run_id`. Les alertes (zone inconnue,
+  passagers, trajet très court) gardent la ligne et posent un indicateur.
 - **Incrémental sans DML.** La Sandbox refuse `INSERT`, `DELETE` et `MERGE`
-  (erreur 403 mesurée). `fct_trips` et `audit_trip_rows` utilisent
-  `insert_overwrite` avec `copy_partitions` : un mois remplace sa partition
-  par une copie de table. Essai préalable sur des tables jetables : le mois
-  relancé est remplacé, les autres sont conservés, aucun `MERGE` généré.
+  (erreur 403 mesurée). `trips`, `trips_quarantine`, `audit_trip_rows` et les
+  agrégats utilisent `insert_overwrite` avec `copy_partitions` : un mois
+  remplace sa partition par une copie de table. Le rapport de qualité et le
+  journal d'ingestion sont ajoutés par load job `WRITE_APPEND`, vérifié
+  autorisé sur une table jetable le 2026-10-30.
 - **Partition par entier `AAAAMM`, pas par date** : le dataset expire les
   partitions de date de plus de 60 jours, ce qui effacerait des données de
   2025 dès leur écriture.
-- **Une table brute par mois**, en écrasement : un chargement Parquet ne peut
+- **Une table Bronze par mois**, en écrasement : un chargement Parquet ne peut
   pas ajouter de colonne de partition, et le DML est interdit. dbt lit tous
-  les mois par la table joker `raw_yellow_tripdata_*`.
-- **Chaque ligne exclue est comptée** (`audit_trip_rows`, une raison par
-  ligne), et le contrôle qualité compare les lignes chargées par le load job,
-  hors dbt, à ces comptes.
-- **Un seul dataset**, couches distinguées par préfixe (`stg_`, `int_`,
-  `fct_`, `dim_`) : le service account n'a les droits d'écriture que sur
-  `nyc_taxi` et ne peut pas créer de dataset.
+  les mois par la table joker `yellow_tripdata_*`.
+- **Contrôle XML externe et non bloquant.** Les comptes publiés par la TLC
+  (`c5iv-bn4s`) viennent après un filtrage TLC que nous ne connaissons pas :
+  un écart signale un sujet à regarder, il ne prouve pas une erreur. Le test
+  a la sévérité `warn`.
 - **Authentification ADC / impersonation**, aucune clé dans le dépôt ni dans
   l'historique (test anti-fuite en CI).
 - **Test « total = somme des composants » écarté** après mesure sur le fichier
   brut ; remplacé par « total ≥ tarif + pourboire ». Détails dans
-  [Schéma en étoile dbt](#schéma-en-étoile-dbt-et-dag-nyc_taxi_elt).
-- **Portabilité DuckDB mesurée puis écartée.** Les modèles inchangés ont été
-  lancés avec dbt-duckdb 1.11.0 (DuckDB 2.0.0) sur 10 000 trajets : **3
-  modèles sur 8** tournent tels quels (`dim_zones`, `dim_payment_type`,
-  `dim_rate_code`). Les 5 autres échouent sur la table joker et
-  `_table_suffix`, la config de partition BigQuery, et des fonctions absentes
-  de DuckDB (`farm_fingerprint`, `to_json_string`, `format_timestamp`,
-  `timestamp_diff`, `safe_divide`, `generate_date_array`, `format_date`). Piège
-  silencieux : `extract(dayofweek)` tourne sur DuckDB mais y numérote le
-  dimanche 0 (1 sur BigQuery), donc `is_weekend` serait faux sans erreur. Le
-  projet ne supporte que BigQuery.
+  [Médaillon dbt](#médaillon-dbt-et-dag-nyc_taxi_elt).
+- **Portabilité DuckDB mesurée puis écartée** (sur l'ancien schéma en étoile,
+  8 modèles). Les modèles inchangés ont été lancés avec dbt-duckdb 1.11.0
+  (DuckDB 2.0.0) sur 10 000 trajets : **3 modèles sur 8** tournaient tels
+  quels (`dim_zones`, `dim_payment_type`, `dim_rate_code`). Les 5 autres
+  échouaient sur la table joker et `_table_suffix`, la config de partition
+  BigQuery, et des fonctions absentes de DuckDB (`farm_fingerprint`,
+  `to_json_string`, `format_timestamp`, `timestamp_diff`, `safe_divide`,
+  `generate_date_array`, `format_date`). Piège silencieux : `extract(dayofweek)`
+  tourne sur DuckDB mais y numérote le dimanche 0 (1 sur BigQuery), donc
+  `is_weekend` serait faux sans erreur. Le projet ne supporte que BigQuery.
 
 ## Limites connues
 
 - **Exécution locale uniquement.** Les DAG ont tourné par `airflow dags test`
   dans un conteneur Docker, sans scheduler permanent ni surveillance.
-- **Expiration des tables (Sandbox, 60 jours).** Relevé le 2026-10-26 :
-  `yellow_tripdata_raw` expire le **16/11/2026** ; `trips_clean` et
-  `daily_kpis`, lues par Looker Studio et `spark/compare_with_bigquery.py`,
-  le **23/12/2026** ; `taxi_zones` le 22/12/2026 ; les tables du schéma en
-  étoile le 25/12/2026. Après le 16/11, la chaîne historique ne peut plus
-  reconstruire ses tables ; après le 23/12, le dashboard et la comparaison
-  Spark cessent de fonctionner. Pour reproduire : relancer
-  `nyc_taxi_pipeline` (recrée les trois tables historiques), le `bq load` de
-  `taxi_zones`, et `nyc_taxi_elt` pour **chaque** mois voulu. Détails :
+- **Expiration des tables (Sandbox, 60 jours).** Relevé le 2026-10-31 :
+  `yellow_tripdata_raw` expire le **16/11/2026** ; `taxi_zones` le
+  22/12/2026 ; `trips_clean` et `daily_kpis`, lues par Looker Studio et
+  `spark/compare_with_bigquery.py`, le **23/12/2026** ; les tables du
+  médaillon les 29 et 30/12/2026. Reconstruction de tout en une commande :
+  `scripts/rebuild_after_expiry.sh`. Détails :
   [Expiration Sandbox et rechargement](#expiration-sandbox-et-rechargement).
 - **Les tests dbt ne tournent pas en CI**, seulement en local contre
   BigQuery. La CI compile avec des identifiants factices et n'interroge
   jamais BigQuery.
+- **Sept règles de rejet n'ont jamais rejeté de ligne** sur les trois mois et
+  n'ont pas de cas de test dédié avec une ligne fautive.
+- **Comptes XML révisés par la TLC** : une reconstruction ultérieure peut
+  donner d'autres alertes, alors que les comptes Parquet restent les mêmes
+  tant que la TLC ne republie pas ses fichiers.
+- **Pas de source PostgreSQL** (voir [Architecture](#architecture)).
 - **Plage de mois : 2024 à 2026**, celle de `dim_date`. Au-delà, il faut
   élargir `dim_date` et le paramètre du DAG ensemble.
 - **Versions testées : Python 3.11** et Airflow 3.3.2 (image Docker, CI).
   Python 3.13 est supporté par Airflow 3.3.2 mais n'a pas été testé.
 - **Octets traités par les relances incrémentales non mesurés** : dbt ne les
   rapporte pas pour les copies de partition.
-- **Taxe CBD non chargée** (`cbd_congestion_fee`, apparue en 2025) : le schéma
-  brut explicite ne la contient pas.
+- **Taxe CBD non chargée** (`cbd_congestion_fee`, apparue en 2025) : le
+  contrat de schéma Bronze ne la contient pas.
 - Un run incrémental qui échoue peut laisser une table temporaire
   `__dbt_tmp` (observé pendant l'essai Sandbox, expiration 12 h).
 - Durées issues d'une seule mesure par cas, sur une seule machine.
@@ -196,9 +299,19 @@ avec ces limites :
 
 | Ressource | Utilisé (mesuré) | Quota gratuit Sandbox |
 |---|---|---|
-| Stockage BigQuery, dataset complet, 2026-10-26 | 4,38 Go | 10 Go |
+| Stockage BigQuery, 4 datasets, 2026-10-31 (après les 3 mois du médaillon) | 5,81 Go | 10 Go |
+| Stockage BigQuery, dataset `nyc_taxi`, 2026-10-26 (schéma en étoile, historique) | 4,38 Go | 10 Go |
 | Requêtes `sql/01-03` (chaîne historique, une exécution, 2026-10-16) | ~1,3 Go traités (793 + 329 + 186 Mo) | 1 To/mois |
-| Premier `dbt run` du schéma en étoile (janvier) | 469,2 Mio par modèle incrémental (rapporté par dbt) | 1 To/mois |
+| Premier `dbt run` du schéma en étoile (janvier, 2026-10-26) | 469,2 Mio par modèle incrémental (rapporté par dbt) | 1 To/mois |
+| Dry run des modèles médaillon de janvier (2026-10-30) | `trips` 492,0 Mo, `trips_quarantine` 780,4 Mo, `audit_trip_rows` 492,0 Mo | 1 To/mois |
+
+Détail du stockage au 2026-10-31 (`__TABLES__`, `size_bytes`) : Bronze
+2,743 Go (`yellow_tripdata_202501` 856,9 Mo, `_202502` 873,3 Mo, `_202503`
+1 012,5 Mo), Silver 2,136 Go (`trips` 1 898,9 Mo, `trips_quarantine`
+237,1 Mo), Gold < 1 Mo, `nyc_taxi` 0,935 Go (`yellow_tripdata_raw` 492,0 Mo,
+`trips_clean` 443,2 Mo). Une table Bronze pèse plus que la table brute
+historique du même mois (856,9 contre 492,0 Mo en janvier) : ce sont les
+quatre colonnes d'ingestion, répétées sur chaque ligne.
 
 Les chargements (load jobs) et les copies de partition ne sont pas facturés
 en volume de requêtes.
@@ -219,22 +332,26 @@ sur janvier 2025 : 0 valeur nulle, 0 doublon, anomalies métier minoritaires
 
 Prérequis : un projet GCP, `gcloud` CLI authentifié (ADC), Docker.
 
-**Chaîne ELT (schéma en étoile)**, testée en Python 3.11 dans l'image
-`apache/airflow:3.3.2-python3.11` :
+**Médaillon**, testé en Python 3.11 dans l'image
+`apache/airflow:3.3.2-python3.11`. Une fois : ADC en impersonation, création
+des trois datasets et droits du compte de service (commandes dans
+[docs/exploitation.md](docs/exploitation.md#prérequis-une-fois)).
 
 ```bash
-gcloud auth application-default login
 docker compose -f airflow/docker-compose.yml build
 # un run par mois (années 2024 à 2026)
 for m in 1 2 3; do
   docker compose -f airflow/docker-compose.yml run --rm airflow bash -c \
     "airflow db migrate && airflow dags test nyc_taxi_elt --conf '{\"year\": 2025, \"month\": $m}'"
 done
+
+# ou tout reconstruire (chaîne historique, taxi_zones, médaillon) en une commande
+scripts/rebuild_after_expiry.sh
 ```
 
 Sous Linux/macOS, définir `GCLOUD_CONFIG_DIR=~/.config/gcloud` avant
-`docker compose`. Sans Airflow : voir les commandes `dbt` de la section
-[Schéma en étoile dbt](#schéma-en-étoile-dbt-et-dag-nyc_taxi_elt).
+`docker compose` ; sous Git Bash, préfixer par `MSYS_NO_PATHCONV=1`. Sans
+Airflow : voir [docs/exploitation.md](docs/exploitation.md#lancer-un-mois).
 
 **Chaîne historique** (Python 3.11-3.13 ; pyarrow n'avait pas de wheel pour
 3.14 au moment de l'écriture) :
@@ -326,8 +443,8 @@ python spark/compare_with_bigquery.py
 `dbt/` est un projet dbt (`dbt-bigquery`) en deux parties. Cette section décrit
 la première : il déclare les 3 tables produites par `sql/01-03` comme
 **sources** et les teste (dbt sert ici de contrôle qualité en aval de `sql/`).
-La seconde, le schéma en étoile, est décrite dans
-[Schéma en étoile dbt et DAG `nyc_taxi_elt`](#schéma-en-étoile-dbt-et-dag-nyc_taxi_elt).
+La seconde, le médaillon, est décrite dans
+[Médaillon dbt et DAG `nyc_taxi_elt`](#médaillon-dbt-et-dag-nyc_taxi_elt).
 
 | Table | Tests |
 |---|---|
@@ -368,7 +485,7 @@ check_source_available → ingest → sql_quality_checks → sql_trips_clean →
 - `sql_*` : exécute `sql/01`, `02`, `03` tels quels via le client BigQuery
   (les résultats des contrôles qualité de `sql/01` sont écrits dans le log).
 - `dbt_test` : lance `dbt test --select source:nyc_taxi` (les 20 tests des
-  tables `sql/01-03` ; le schéma en étoile est testé par le DAG `nyc_taxi_elt`).
+  tables `sql/01-03` ; le médaillon est testé par le DAG `nyc_taxi_elt`).
 
 Paramètres `year` / `month` (défaut 2025 / 1), déclenchement manuel
 (`schedule=None`).
@@ -395,53 +512,57 @@ Exécuté le 2026-10-16 (`airflow dags test nyc_taxi_pipeline 2025-01-01`) :
 les 6 tâches sont en succès, avec le HEAD TLC → 200 (59 158 238 octets),
 3 475 226 lignes chargées, `sql/01-03` OK et `dbt test` PASS=20.
 
-## Schéma en étoile dbt et DAG `nyc_taxi_elt`
+## Médaillon dbt et DAG `nyc_taxi_elt`
 
 Deuxième chaîne, indépendante de la première (qui reste inchangée) : un mois
-à la fois, du fichier TLC brut jusqu'à un schéma en étoile construit et testé
+à la fois, des sources publiques jusqu'à la couche Gold, construite et testée
 par dbt.
 
 ```
-check_source → download → load_raw → dbt_seed → dbt_run → dbt_test → quality_gate
+check_source → download → load_bronze, load_bronze_zones, load_bronze_tlc_xml
+             → dbt_seed → dbt_run → dbt_test → quality_gate
 ```
 
-- `load_raw` : `ingestion/load_raw_month.py`, une table par mois
-  `raw_yellow_tripdata_AAAAMM`, en écrasement (`WRITE_TRUNCATE`).
-- `dbt_run` : `stg_yellow_trips` (vue sur `raw_yellow_tripdata_*`) →
-  `int_trips_classified` (chaque ligne reçoit la première règle d'exclusion
-  qu'elle enfreint) → `fct_trips` (un trajet par ligne) et `audit_trip_rows`
-  (comptes gardés / écartés par règle), plus `dim_zones`, `dim_date`,
-  `dim_payment_type`, `dim_rate_code`.
-- `dbt_test` : les 41 tests du schéma en étoile (`--exclude source:nyc_taxi`),
-  soit 38 tests génériques (unique, not_null, relationships, accepted_values,
-  bornes) et 3 tests métier : réconciliation brut = gardées + écartées,
-  règles de trajet, total ≥ tarif + pourboire. Par modèle : `fct_trips` 17 +
-  les 3 tests métier, `audit_trip_rows` 5, `dim_zones` 4, `stg_yellow_trips`
-  3, `dim_date` 3, `dim_payment_type` 3, `dim_rate_code` 3. Aucun test ne
-  porte directement sur les seeds.
+- `load_bronze*` : `ingestion/bronze.py` (Parquet des trajets, CSV des zones)
+  et `ingestion/tlc_zone_trips_xml.py` (XML NYC Open Data). Écrasement
+  (`WRITE_TRUNCATE`), colonnes d'ingestion, compte vérifié et journalisé.
+- `dbt_run` : Silver (`stg_*` vues sur Bronze, `int_trips_classified` qui
+  attribue à chaque ligne la première règle enfreinte, `trips`,
+  `trips_quarantine`, `audit_trip_rows`) puis Gold (`fct_trips`, `dim_*`,
+  `agg_daily_kpis`, `agg_zone_monthly`, `tlc_zone_reconciliation`).
+  15 modèles et 3 seeds.
+- `dbt_test` : les **61 tests du médaillon** (`--exclude source:nyc_taxi`),
+  soit 55 tests génériques (unique, not_null, relationships, accepted_values,
+  bornes) et 6 tests métier : Silver + quarantaine = Bronze, quarantaine =
+  audit, règles de trajet revérifiées sur Silver, total ≥ tarif + pourboire,
+  zones Bronze = zones Silver, et le contrôle XML (sévérité `warn`, seul test
+  non bloquant). Par modèle : `trips` 12, `audit_trip_rows` 6, `fct_trips` 5,
+  `trips_quarantine` 5, `agg_daily_kpis` 4, `dim_zones` 4, `dim_date` 3,
+  `dim_payment_type` 3, `dim_rate_code` 3, `stg_tlc_zone_trips` 3,
+  `agg_zone_monthly` 2, `stg_taxi_zone_lookup` 2, `tlc_zone_reconciliation` 2,
+  `stg_yellow_trips` 1.
 
-  Le projet dbt compte **61 tests au total** (c'est le chiffre qu'affiche
-  `dbt compile` en CI) : ces 41, plus les 20 tests historiques sur
-  `yellow_tripdata_raw`, `trips_clean` et `daily_kpis`, lancés par le DAG
+  Le projet dbt compte **81 tests au total** (c'est le chiffre qu'affiche
+  `dbt compile` en CI) : ces 61, plus les 20 tests historiques
+  sur `yellow_tripdata_raw`, `trips_clean` et `daily_kpis`, lancés par le DAG
   `nyc_taxi_pipeline` (`--select source:nyc_taxi`).
-- `quality_gate` : `quality/quality_gate.py` échoue si un test dbt n'est pas
-  passé, ou si les lignes chargées par le load job ≠ lignes de
-  `audit_trip_rows`, ou si les lignes gardées ≠ lignes du mois dans `fct_trips`.
+- `quality_gate` : `quality/quality_gate.py` vérifie source = Bronze, Bronze
+  = audit, gardées = Silver, rejets par motif = quarantaine, Silver +
+  quarantaine = Bronze, et que la quarantaine du mois porte le `run_id` du run.
+  Il écrit le rapport dans `nyc_taxi_silver.quality_report` **avant** de
+  conclure, y compris en cas d'échec.
+- `quality/idempotence.py` : instantané (`snapshot`) puis comparaison
+  (`compare`) de tous les mois, pour prouver qu'une relance ne change rien.
+
+Règles, seuils et justification : [docs/qualite.md](docs/qualite.md).
 
 **Incrémental sans DML.** La Sandbox refuse `INSERT`, `DELETE` et `MERGE`
-(erreur 403 mesurée le 2026-10-26). `fct_trips` et `audit_trip_rows` sont donc
-partitionnées par un entier `AAAAMM` et reconstruites en `insert_overwrite`
-avec `copy_partitions` : relancer un mois remplace sa partition par une copie
-de table, sans toucher aux autres mois. Pas de partition par date : le
-dataset expire les partitions de plus de 60 jours, ce qui effacerait des
-données de 2025 dès leur écriture.
-
-**Règles d'exclusion** (dans cet ordre, une seule raison par ligne) :
-horodatage manquant, pickup hors du mois du fichier, dropoff avant pickup,
-durée > 6 h, distance nulle, ≤ 0 ou > 200 mi, tarif nul, < 0 ou > 1000 $,
-total inférieur à tarif + pourboire, doublon exact. La règle « pickup hors du
-mois » garde les partitions disjointes : le fichier de janvier contient
-quelques trajets de décembre, qui ne doivent pas écraser décembre.
+(erreur 403 mesurée le 2026-10-26). Les tables Silver et Gold mensuelles sont
+donc partitionnées par un entier `AAAAMM` et reconstruites en
+`insert_overwrite` avec `copy_partitions` : relancer un mois remplace sa
+partition par une copie de table, sans toucher aux autres mois. Pas de
+partition par date : le dataset expire les partitions de plus de 60 jours, ce
+qui effacerait des données de 2025 dès leur écriture.
 
 **Test remplacé.** Un premier test exigeait `total_amount` = somme des
 composants (tarif, extra, taxe MTA, pourboire, péages, surcharges). Il
@@ -453,28 +574,8 @@ chargée par ce projet). Les écarts les plus fréquents valent +2,50 $
 congestion et la taxe CBD comptées en double ou absentes selon les
 enregistrements. C'est la façon dont le fichier TLC est rempli, pas une erreur
 du pipeline : ce test n'est pas gardé. Il est remplacé par la règle
-« total ≥ tarif + pourboire », enfreinte par 225 trajets sur 3 253 246 en
-janvier, désormais écartés (`invalid_total`) et vérifiés par un test bloquant.
-
-**Mesuré le 2026-10-26** (Sandbox BigQuery, `airflow dags test` sous Docker,
-une machine Windows) : les trois mois sont passés par le DAG, l'un après
-l'autre, chacun dans un conteneur neuf.
-
-| Mois | Durée du run | Lignes brutes chargées | Dans `fct_trips` | Écartées | Tests dbt |
-|---|---|---|---|---|---|
-| 2025-01 | 205 s | 3 475 226 | 3 253 021 | 222 205 | 41/41 |
-| 2025-02 | 234 s | 3 577 543 | 3 310 026 | 267 517 | 41/41 |
-| 2025-03 | 184 s | 4 145 257 | 3 847 686 | 297 571 | 41/41 |
-
-- Pour ces trois runs, les fichiers Parquet étaient déjà présents en local :
-  le téléchargement est sauté, les durées ne le comptent pas. Un run plus tôt
-  le même jour, téléchargement de mars compris (70 Mo), a pris 211 s.
-- Idempotence : chacun des trois mois avait déjà été construit avant ces runs
-  (janvier et février par `dbt run`, mars deux fois par le DAG). Les comptes
-  sont identiques à la ligne près à chaque relance, et relancer un mois ne
-  change pas les autres.
-- Une seule mesure par cas : les durées sont un ordre de grandeur, pas un
-  benchmark (l'écart de 184 à 234 s ne suit pas le volume).
+« total ≥ tarif + pourboire » (`invalid_total`, 225 trajets en janvier),
+vérifiée par un test bloquant.
 
 **Plage de mois acceptée** : le DAG n'accepte que les années 2024 à 2026,
 c'est-à-dire la plage de `dim_date` (vars `dim_date_start` / `dim_date_end`).
@@ -492,18 +593,6 @@ Le téléchargement écrit dans `<fichier>.part`, vérifie la taille reçue cont
 `Content-Length`, puis renomme : une coupure ne laisse jamais de Parquet
 tronqué qu'une relance réutiliserait (`tests/test_download_taxi_data.py`).
 
-```bash
-# un mois, de bout en bout (Docker)
-docker compose -f airflow/docker-compose.yml run --rm airflow bash -c \
-  'airflow db migrate && airflow dags test nyc_taxi_elt --conf "{\"year\": 2025, \"month\": 3}"'
-
-# sans Airflow
-python ingestion/load_raw_month.py --year 2025 --month 3
-.venv-dbt\Scripts\dbt seed --project-dir dbt --profiles-dir dbt
-.venv-dbt\Scripts\dbt run  --project-dir dbt --profiles-dir dbt --vars "{pipeline_month: 202503}"
-.venv-dbt\Scripts\dbt test --project-dir dbt --profiles-dir dbt --exclude source:nyc_taxi
-```
-
 ### Ce que vérifie la CI (et ce qu'elle ne vérifie pas)
 
 GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
@@ -514,26 +603,28 @@ GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
   factices** (un fichier ADC aux valeurs `ci-dummy`, écrit dans le dossier
   temporaire du runner), et `--no-populate-cache --no-introspect` l'empêchent
   d'envoyer la moindre requête. **Le compile en CI n'interroge jamais
-  BigQuery** ; il vérifie que les 8 modèles et 61 tests se rendent en SQL ;
-- pytest, dont l'import réel des deux DAG par le `DagBag` d'Airflow 3.3.2.
+  BigQuery** ; il vérifie que les 15 modèles et 81 tests se rendent en SQL ;
+- pytest (60 tests), dont l'import réel des deux DAG par le `DagBag`
+  d'Airflow 3.3.2, l'ingestion Bronze et XML, le contrôle qualité et
+  l'idempotence sur un faux client BigQuery.
 
-**Les 41 tests dbt du schéma en étoile ne tournent pas en CI** : ils tournent
-en local contre BigQuery (`dbt test` ou tâche `dbt_test` du DAG), comme les
+**Les 61 tests dbt du médaillon ne tournent pas en CI** : ils tournent en
+local contre BigQuery (`dbt test` ou tâche `dbt_test` du DAG), comme les
 exécutions du DAG. Un modèle qui compile en CI peut donc encore échouer sur
 BigQuery.
 
 ### Expiration Sandbox et rechargement
 
-Toute table du dataset expire 60 jours après sa dernière création ou son
-dernier remplacement (réglage par défaut de la Sandbox). Dates relevées le
-2026-10-26 :
+Toute table expire 60 jours après sa dernière création ou son dernier
+remplacement (réglage par défaut de la Sandbox) ; les datasets restent. Dates
+relevées le 2026-10-31 :
 
 | Table(s) | Expire le | Lue par |
 |---|---|---|
 | `yellow_tripdata_raw` | 16/11/2026 | `sql/01-02`, test dbt `source:nyc_taxi` |
 | `taxi_zones` | 22/12/2026 | exemple de jointure ci-dessous |
 | `trips_clean`, `daily_kpis` | 23/12/2026 | dashboard Looker Studio, `spark/compare_with_bigquery.py` |
-| tables du schéma en étoile (`raw_yellow_tripdata_*`, `fct_trips`, `dim_*`, seeds…) | 25/12/2026 | DAG `nyc_taxi_elt` |
+| tables Bronze, Silver et Gold du médaillon | 29 et 30/12/2026 | DAG `nyc_taxi_elt` |
 
 Conséquences si rien n'est rechargé :
 - après le 16/11, `sql/01-03` et le DAG `nyc_taxi_pipeline` ne peuvent plus
@@ -542,13 +633,15 @@ Conséquences si rien n'est rechargé :
 - après le 23/12, le dashboard Looker Studio et
   `spark/compare_with_bigquery.py` cessent de fonctionner (tables absentes).
 
-Rechargement :
-- chaîne historique : relancer le DAG `nyc_taxi_pipeline` (ou
-  `load_to_bigquery.py` puis `sql/01-03`), ce qui recrée les trois tables avec
-  60 nouveaux jours ;
-- `taxi_zones` : relancer le `bq load` de la section VBA ;
-- schéma en étoile : relancer `nyc_taxi_elt` **pour chaque mois** voulu. Si
-  `fct_trips` a expiré, le premier run la recrée avec ce seul mois.
+Rechargement de tout, en une commande (chaîne historique, `taxi_zones` depuis
+le seed versionné, puis un run médaillon par mois) :
+
+```bash
+scripts/rebuild_after_expiry.sh                    # 2025-01 2025-02 2025-03
+scripts/rebuild_after_expiry.sh --dry-run          # affiche les étapes sans rien lancer
+```
+
+Détails : [docs/exploitation.md](docs/exploitation.md#expiration-sandbox-et-reconstruction-complète).
 
 ## Référentiel des zones : nettoyage Excel VBA
 
@@ -687,11 +780,11 @@ Détail et justification permission par permission : [`iam/iam_policy.yaml`](iam
 | Principal | Rôle | Portée | Pourquoi |
 |---|---|---|---|
 | SA `taxi-pipeline` | rôle custom `taxiPipelineJobRunner` : **`bigquery.jobs.create` seulement** ([`iam/custom_role_job_runner.yaml`](iam/custom_role_job_runner.yaml)) | projet | Lancer un job est la seule action BigQuery qui ne peut pas être limitée à un dataset. Plus étroit que `roles/bigquery.jobUser`. |
-| SA `taxi-pipeline` | `roles/bigquery.dataEditor` (stocké `WRITER` dans l'ACL du dataset) | dataset `nyc_taxi` **uniquement** | Chargement `WRITE_TRUNCATE` + `CREATE OR REPLACE TABLE`. Rôle prédéfini le plus restreint qui le permet. Aucun accès aux autres datasets. |
+| SA `taxi-pipeline` | `roles/bigquery.dataEditor` (stocké `WRITER` dans l'ACL du dataset) | datasets `nyc_taxi`, `nyc_taxi_bronze`, `nyc_taxi_silver`, `nyc_taxi_gold` **uniquement** | Chargement `WRITE_TRUNCATE` / `WRITE_APPEND`, `CREATE OR REPLACE TABLE`, copies de partition. Rôle prédéfini le plus restreint qui le permet. Aucun accès aux autres datasets. |
 | opérateur humain | `roles/iam.serviceAccountTokenCreator` | ce SA uniquement | Emprunter l'identité du SA (tokens courts), sans clé. |
 
 Ce que le SA **ne peut pas** faire : modifier l'IAM, créer ou supprimer un
-dataset, modifier l'ACL de `nyc_taxi`, lire un autre dataset, activer des API.
+dataset, modifier l'ACL de ses datasets, lire un autre dataset, activer des API.
 **Aucune clé JSON n'est créée** : l'accès passe par l'impersonation, ce qui
 supprime le risque « clé commitée ».
 
@@ -713,7 +806,8 @@ rapport. La différence : le pipeline ne s'exécute plus avec ces droits.
 python iam/iam_setup.py plan --operator <votre-email>
 
 # 2. Appliquer (compte owner) : active iam + iamcredentials, crée le rôle
-#    custom et le SA, pose les 3 bindings. Ré-exécutable (skip si existant).
+#    custom et le SA, pose les bindings (rôle projet, WRITER sur les 4 datasets,
+#    tokenCreator). Ré-exécutable (skip si existant).
 python iam/iam_setup.py apply --operator <votre-email>
 
 # 3. Faire tourner le pipeline sous l'identité du SA (aucun changement de code)
@@ -749,6 +843,11 @@ Pour revenir à l'ancien mode : `gcloud auth application-default login`
 [audit] OK: pipeline identity has no admin role
 ```
 
+**Étendu au médaillon le 2026-10-30** : les trois datasets créés par le
+compte propriétaire, `apply` relancé (WRITER du SA sur `nyc_taxi_bronze`,
+`nyc_taxi_silver` et `nyc_taxi_gold`), `audit` OK ; les runs médaillon ont
+tous tourné sous l'identité du SA.
+
 ### Vérification anti-fuite de credentials
 
 `scripts/check_secrets.py` scanne les fichiers suivis ou indexés par git, et
@@ -775,9 +874,12 @@ chmod +x .git/hooks/pre-commit
 Pour éviter tout coût résiduel une fois le projet terminé :
 
 ```bash
-bq rm -r -f <PROJECT_ID>:nyc_taxi   # supprime le dataset et toutes ses tables
+# supprime chaque dataset et toutes ses tables
+for d in nyc_taxi nyc_taxi_bronze nyc_taxi_silver nyc_taxi_gold; do
+  bq rm -r -f <PROJECT_ID>:$d
+done
 ```
 
-Le dataset Sandbox expire de toute façon automatiquement après 60 jours
+Les tables Sandbox expirent de toute façon automatiquement après 60 jours
 d'inactivité, mais autant le supprimer explicitement dès que le portfolio
 n'en a plus besoin.
