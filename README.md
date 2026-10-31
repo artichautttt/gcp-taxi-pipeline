@@ -127,7 +127,8 @@ mars, relance de janvier)** :
   total < tarif + pourboire 777, composant négatif 311, dropoff avant pickup
   298, pickup hors du mois du fichier 86. Sept règles à 0 (horodatage
   manquant, zone, paiement, code tarifaire ou fournisseur inconnu, doublons
-  exacts ou de clé métier). Détail par mois : [docs/qualite.md](docs/qualite.md).
+  exacts ou de clé métier), chacune vérifiée par un test unitaire. Détail
+  par mois : [docs/qualite.md](docs/qualite.md).
 - Alertes gardées en Silver (janvier / février / mars) : zone inconnue
   25 485 / 22 419 / 24 987, nombre de passagers nul, 0 ou > 6
   436 475 / 649 069 / 747 163, trajet de moins de 60 s 8 839 / 8 452 / 10 790.
@@ -259,8 +260,6 @@ par le médaillon ne sont pas comparables au trajet près.
 - **Les tests dbt ne tournent pas en CI**, seulement en local contre
   BigQuery. La CI compile avec des identifiants factices et n'interroge
   jamais BigQuery.
-- **Sept règles de rejet n'ont jamais rejeté de ligne** sur les trois mois et
-  n'ont pas de cas de test dédié avec une ligne fautive.
 - **Comptes XML révisés par la TLC** : une reconstruction ultérieure peut
   donner d'autres alertes, alors que les comptes Parquet restent les mêmes
   tant que la TLC ne republie pas ses fichiers.
@@ -542,8 +541,19 @@ check_source → download → load_bronze, load_bronze_zones, load_bronze_tlc_xm
   `agg_zone_monthly` 2, `stg_taxi_zone_lookup` 2, `tlc_zone_reconciliation` 2,
   `stg_yellow_trips` 1.
 
-  Le projet dbt compte **81 tests au total** (c'est le chiffre qu'affiche
-  `dbt compile` en CI) : ces 61, plus les 20 tests historiques
+  S'y ajoutent **21 tests unitaires dbt** (`dbt/models/silver/_int_trips_classified__unit_tests.yml`) :
+  une ligne fictive par règle de rejet (16, dont les 7 qui n'ont rejeté
+  aucune ligne réelle) et par alerte (3), plus une course valide et un code
+  tarifaire nul gardés. Chacun vérifie le motif ou l'indicateur attribué.
+  Détail : [docs/qualite.md](docs/qualite.md#tests-unitaires-des-règles).
+  `dbt_test` lance donc 82 tests ; mesuré le 2026-10-31 sur janvier : PASS =
+  81, WARN = 1 (contrôle XML), ERROR = 0. Les runs du tableau
+  [Résultats mesurés](#résultats-mesurés) sont antérieurs aux tests unitaires
+  (61 tests).
+
+  Le projet dbt compte **81 tests de données et 21 tests unitaires, 102 au
+  total** (`dbt compile` en CI : `81 data tests, 21 unit tests`) : les 61 et
+  21 du médaillon, plus les 20 tests historiques
   sur `yellow_tripdata_raw`, `trips_clean` et `daily_kpis`, lancés par le DAG
   `nyc_taxi_pipeline` (`--select source:nyc_taxi`).
 - `quality_gate` : `quality/quality_gate.py` vérifie source = Bronze, Bronze
@@ -603,12 +613,14 @@ GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
   factices** (un fichier ADC aux valeurs `ci-dummy`, écrit dans le dossier
   temporaire du runner), et `--no-populate-cache --no-introspect` l'empêchent
   d'envoyer la moindre requête. **Le compile en CI n'interroge jamais
-  BigQuery** ; il vérifie que les 15 modèles et 81 tests se rendent en SQL ;
+  BigQuery** ; il vérifie que les 15 modèles, 81 tests de données et 21 tests unitaires
+  se rendent en SQL ;
 - pytest (60 tests), dont l'import réel des deux DAG par le `DagBag`
   d'Airflow 3.3.2, l'ingestion Bronze et XML, le contrôle qualité et
   l'idempotence sur un faux client BigQuery.
 
-**Les 61 tests dbt du médaillon ne tournent pas en CI** : ils tournent en
+**Les 82 tests dbt du médaillon (dont les 21 unitaires) ne tournent pas en
+CI** : un test unitaire dbt s'exécute aussi sur BigQuery. Ils tournent en
 local contre BigQuery (`dbt test` ou tâche `dbt_test` du DAG), comme les
 exécutions du DAG. Un modèle qui compile en CI peut donc encore échouer sur
 BigQuery.

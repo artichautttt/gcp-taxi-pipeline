@@ -1,0 +1,928 @@
+# Unit tests (dbt 1.8+): one fake bronze row per rule, from a valid base
+# trip, checked against the reason or flag int_trips_classified gives it.
+# trips_quarantine copies exclusion_reason as rejection_reason; trips keeps
+# the rows where it is null.
+# Rules: docs/qualite.md.
+version: 2
+unit_tests:
+- name: int_trips_classified_kept_valid_trip
+  description: Une course valide est gardée, sans alerte.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: &id001
+    - location_id: 132
+      is_unknown: false
+    - location_id: 236
+      is_unknown: false
+    - location_id: 264
+      is_unknown: true
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+      flag_unknown_zone: false
+      flag_passenger_count: false
+      flag_short_trip: false
+- name: int_trips_classified_rejects_missing_timestamp
+  description: Dropoff nul.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: null
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: missing_timestamp
+- name: int_trips_classified_rejects_pickup_outside_file_month
+  description: Trajet de décembre dans le fichier de janvier.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2024-12-31 23:50:00'
+      dropoff_datetime: '2025-01-01 00:10:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: pickup_outside_file_month
+- name: int_trips_classified_rejects_dropoff_before_pickup
+  description: Dropoff 10 min avant le pickup.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 09:50:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: dropoff_before_pickup
+- name: int_trips_classified_rejects_duration_over_6h
+  description: Course de 6 h 30.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 16:30:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: duration_over_6h
+- name: int_trips_classified_rejects_invalid_distance
+  description: Distance 0 mi.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 0.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: invalid_distance
+- name: int_trips_classified_rejects_invalid_fare
+  description: Tarif négatif.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: -5.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: invalid_fare
+- name: int_trips_classified_rejects_invalid_total
+  description: Total inférieur à tarif + pourboire.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 10.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: invalid_total
+- name: int_trips_classified_rejects_unknown_zone
+  description: Zone de dépose absente du référentiel.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 999
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: unknown_zone
+- name: int_trips_classified_rejects_unknown_payment_type
+  description: Code de paiement 9, absent du référentiel.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 9
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: unknown_payment_type
+- name: int_trips_classified_rejects_unknown_rate_code
+  description: Code tarifaire 7, absent du référentiel.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 7
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: unknown_rate_code
+- name: int_trips_classified_keeps_null_rate_code
+  description: 'Code tarifaire nul : gardé (ramené à 99 dans trips).'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: null
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+- name: int_trips_classified_rejects_unknown_vendor
+  description: Fournisseur 3, hors 1, 2, 6, 7.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 3
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: unknown_vendor
+- name: int_trips_classified_rejects_zero_duration
+  description: Dropoff = pickup.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:00:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: zero_duration
+- name: int_trips_classified_rejects_implausible_speed
+  description: 50 mi en 20 min (150 mph).
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 50.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: implausible_speed
+- name: int_trips_classified_rejects_negative_component
+  description: Péage négatif.
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: -1.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: negative_component
+- name: int_trips_classified_rejects_duplicate
+  description: 'Deux copies exactes : la première est gardée.'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+    - exclusion_reason: duplicate
+- name: int_trips_classified_rejects_duplicate_business_key
+  description: 'Même clé métier, nombre de passagers différent : la première est gardée.'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 2
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+    - exclusion_reason: duplicate_business_key
+- name: int_trips_classified_flags_unknown_zone
+  description: 'Zone 264 (Unknown) : gardée avec l''alerte.'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 1
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 264
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+      flag_unknown_zone: true
+      flag_passenger_count: false
+      flag_short_trip: false
+- name: int_trips_classified_flags_passenger_count
+  description: '0 passager : gardée avec l''alerte.'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:20:00'
+      passenger_count: 0
+      trip_distance: 3.0
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+      flag_unknown_zone: false
+      flag_passenger_count: true
+      flag_short_trip: false
+- name: int_trips_classified_flags_short_trip
+  description: 'Course de 40 s : gardée avec l''alerte.'
+  model: int_trips_classified
+  overrides:
+    vars:
+      pipeline_month: 202501
+  given:
+  - input: ref('stg_yellow_trips')
+    rows:
+    - source_month: 202501
+      vendor_id: 2
+      pickup_datetime: '2025-01-15 10:00:00'
+      dropoff_datetime: '2025-01-15 10:00:40'
+      passenger_count: 1
+      trip_distance: 0.1
+      rate_code_id: 1
+      store_and_fwd_flag: N
+      pickup_zone_id: 132
+      dropoff_zone_id: 236
+      payment_type_id: 1
+      fare_amount: 20.0
+      extra: 1.0
+      mta_tax: 0.5
+      tip_amount: 4.0
+      tolls_amount: 0.0
+      improvement_surcharge: 1.0
+      total_amount: 30.0
+      congestion_surcharge: 2.5
+      airport_fee: 0.0
+  - input: ref('taxi_zone_lookup')
+    rows: *id001
+  - input: ref('payment_type_lookup')
+    rows:
+    - payment_type_id: 1
+  - input: ref('rate_code_lookup')
+    rows:
+    - rate_code_id: 1
+    - rate_code_id: 99
+  expect:
+    rows:
+    - exclusion_reason: null
+      flag_unknown_zone: false
+      flag_passenger_count: false
+      flag_short_trip: true

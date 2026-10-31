@@ -69,8 +69,8 @@ une autre règle est compté sous cette autre règle.
 Règles à 0 sur les trois mois : `missing_timestamp`, `unknown_zone`,
 `unknown_payment_type`, `unknown_rate_code`, `unknown_vendor`, `duplicate`,
 `duplicate_business_key`. Elles restent comme garde-fous pour un fichier
-futur. Leur motif fait partie des `accepted_values` testés, mais aucune n'a de
-cas de test dédié avec une ligne fautive : limite connue.
+futur ; chacune est vérifiée par un test unitaire qui injecte une ligne
+fautive (voir [Tests unitaires des règles](#tests-unitaires-des-règles)).
 
 `zero_duration` passe de 1 232 (janvier) à 21 428 (mars) : mesuré, non
 expliqué par la TLC.
@@ -85,6 +85,49 @@ expliqué par la TLC.
 
 Ces comptes figurent dans `nyc_taxi_silver.quality_report`
 (`outcome_kind = 'warning'`).
+
+## Tests unitaires des règles
+
+Chaque règle de rejet et d'alerte a son test unitaire dbt (21 au total),
+dans `dbt/models/silver/_int_trips_classified__unit_tests.yml`. Un test part
+d'une course valide fictive (janvier 2025, 3 mi en 20 min, 30 $), la modifie
+sur un seul champ pour enfreindre une règle, et vérifie le motif
+(`exclusion_reason`, copié tel quel en `rejection_reason` de
+`trips_quarantine`) ou l'indicateur `flag_*` (ligne gardée) que
+`int_trips_classified` lui donne. Les référentiels (zones, paiements, codes
+tarifaires) sont aussi fictifs : le test ne lit aucune table.
+
+| Test | Ligne injectée | Résultat attendu |
+|---|---|---|
+| `kept_valid_trip` | course valide | gardée, aucun indicateur |
+| `rejects_missing_timestamp` | dropoff nul | `missing_timestamp` |
+| `rejects_pickup_outside_file_month` | pickup le 31/12/2024 dans le fichier de janvier | `pickup_outside_file_month` |
+| `rejects_dropoff_before_pickup` | dropoff 10 min avant le pickup | `dropoff_before_pickup` |
+| `rejects_duration_over_6h` | 6 h 30 | `duration_over_6h` |
+| `rejects_invalid_distance` | 0 mi | `invalid_distance` |
+| `rejects_invalid_fare` | tarif −5 $ | `invalid_fare` |
+| `rejects_invalid_total` | total 10 $ < tarif + pourboire 24 $ | `invalid_total` |
+| `rejects_unknown_zone` | zone de dépose 999 | `unknown_zone` |
+| `rejects_unknown_payment_type` | paiement 9 | `unknown_payment_type` |
+| `rejects_unknown_rate_code` | code tarifaire 7 | `unknown_rate_code` |
+| `keeps_null_rate_code` | code tarifaire nul | gardée |
+| `rejects_unknown_vendor` | fournisseur 3 | `unknown_vendor` |
+| `rejects_zero_duration` | dropoff = pickup | `zero_duration` |
+| `rejects_implausible_speed` | 50 mi en 20 min | `implausible_speed` |
+| `rejects_negative_component` | péage −1 $ | `negative_component` |
+| `rejects_duplicate` | deux copies exactes | 1re gardée, 2e `duplicate` |
+| `rejects_duplicate_business_key` | même clé métier, passagers 1 puis 2 | 1re gardée, 2e `duplicate_business_key` |
+| `flags_unknown_zone` | zone de pickup 264 | gardée, `flag_unknown_zone` |
+| `flags_passenger_count` | 0 passager | gardée, `flag_passenger_count` |
+| `flags_short_trip` | 0,1 mi en 40 s | gardée, `flag_short_trip` |
+
+Ils tournent avec les autres tests du médaillon (`dbt test --exclude
+source:nyc_taxi`, tâche `dbt_test` du DAG) : un test unitaire en échec bloque
+le run. Lancés seuls le 2026-10-31 : `dbt test --select test_type:unit`,
+PASS = 21 ; avec tous les tests du médaillon : PASS = 81, WARN = 1 (contrôle
+XML), ERROR = 0, sur 82. Contre-épreuve : en remplaçant le motif attendu de
+`rejects_unknown_vendor` par `unknown_zone`, le test échoue (FAIL), puis
+repasse une fois le fichier rétabli.
 
 ## Contrôles de réconciliation (bloquants)
 
@@ -104,7 +147,8 @@ Les mêmes égalités existent en tests dbt (`dbt/tests/`), plus deux tests
 qui revérifient les règles sur Silver (`silver_trips_respect_trip_rules`,
 `silver_trips_total_covers_fare_and_tip`). Le 2026-10-31, les quatre runs
 (janvier deux fois, février, mars) ont passé le contrôle : dbt PASS = 60,
-WARN = 1 (contrôle XML ci-dessous), ERROR = 0, sur 61 tests.
+WARN = 1 (contrôle XML ci-dessous), ERROR = 0, sur 61 tests (les tests
+unitaires, ajoutés ensuite, n'existaient pas encore).
 
 ## Contrôle externe : comptes publiés par la TLC (XML)
 
@@ -163,5 +207,6 @@ order by month, abs(gap_bronze) desc;
 ## Changer une règle
 
 Voir [exploitation.md](exploitation.md#traiter-la-quarantaine) : modifier
-`int_trips_classified.sql` et la liste `accepted_values` de `_silver.yml`,
+`int_trips_classified.sql`, la liste `accepted_values` de `_silver.yml` et
+le test unitaire de la règle (`_int_trips_classified__unit_tests.yml`),
 documenter ici, relancer chaque mois concerné.
