@@ -35,3 +35,8 @@ __pycache__/
 *.xlsm
 *.xlsx
 ~$*
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
