@@ -397,6 +397,82 @@ Le fichier `.env` et toute clé de service ne sont jamais commités (`.gitignore
 Looker Studio est gratuit sans limite liée à ce projet (facturé uniquement le
 volume de requêtes BigQuery sous-jacent, déjà comptabilisé ci-dessus).
 
+## KPI récurrents en R (bigrquery)
+
+`analysis/kpi_bigquery.R` calcule cinq KPI dans BigQuery, les met en forme
+avec dplyr et stringr, et les exporte en CSV agrégés dans `analysis/output/`.
+Il recoupe aussi les comptes du pipeline avec les comptes publiés.
+
+```bash
+# R 4.6.2 ; paquets : dplyr 1.2.1, bigrquery 1.6.2, stringr 1.6.0 (gargle 1.7.0)
+Rscript -e "install.packages(c('dplyr', 'bigrquery', 'stringr'))"
+# GCP_PROJECT_ID et TAXI_PIPELINE_SA dans l'environnement ou dans .env (voir .env.example)
+Rscript analysis/kpi_bigquery.R --check-auth     # un appel de métadonnées, gratuit
+Rscript analysis/kpi_bigquery.R --dry-run-only   # octets prévus, rien n'est exécuté
+Rscript analysis/kpi_bigquery.R                  # KPI, recoupement, CSV
+```
+
+| KPI | Source | Fichier |
+|---|---|---|
+| K1 – rejets par mois et par règle, en % des lignes Bronze (CTE) | `silver.trips_quarantine`, `silver.audit_trip_rows` | `k1_rejets_par_regle.csv` |
+| K2 – trajets, trajets par jour, chiffre d'affaires, zone inconnue, par mois | `gold.agg_daily_kpis` | `k2_volume_mensuel.csv` |
+| K3 – 10 premières zones de prise en charge par mois et leur part (CTE, fenêtre) | `gold.agg_zone_monthly`, `gold.dim_zones` | `k3_top_zones.csv` |
+| K4 – zones en alerte du contrôle TLC par mois et par borough | `gold.tlc_zone_reconciliation` | `k4_alertes_tlc.csv` |
+| K5 – trajets et chiffre d'affaires moyens par jour de la semaine (CTE) | `gold.agg_daily_kpis`, `gold.dim_date` | `k5_profil_jour_semaine.csv` |
+
+Les CSV ne contiennent que des agrégats (mois, règle, zone, borough, jour de
+la semaine), jamais une ligne de trajet. `recoupement.csv` compare les comptes
+mesurés aux comptes publiés ; `run_log.csv` donne les octets de chaque requête.
+
+**Authentification, sans clé.** gargle 1.7.0 (bibliothèque d'authentification
+de bigrquery) ne lit pas les ADC de type `impersonated_service_account`. Le
+script demande donc un jeton d'accès court à `gcloud auth print-access-token
+--impersonate-service-account=$TAXI_PIPELINE_SA`, au nom du même compte de
+service que dbt. Le jeton reste en mémoire : il n'est ni affiché, ni écrit,
+ni mis en cache (`cache_path = FALSE`).
+
+**Coût plafonné.** Chaque requête passe d'abord en dry-run et s'arrête si
+elle lirait plus de 100 Mio. Le job porte aussi `maximumBytesBilled =
+104857600` : au-delà, BigQuery refuse la requête au lieu de la facturer. Les
+résultats sont lus par `tabledata.list` (`api = "json"`), sans l'API Storage.
+
+**Mesures du 2026-11-05** (`run_log.csv`, `recoupement.csv`) :
+
+| Requête | Octets prévus (dry-run) | Octets facturés |
+|---|---:|---:|
+| K1 | 19 208 155 | 20 971 520 |
+| K2 | 2 880 | 10 485 760 |
+| K3 | 28 164 | 20 971 520 |
+| K4 | 26 866 | 10 485 760 |
+| K5 | 21 670 | 20 971 520 |
+| recoupement | 1 485 | 41 943 040 |
+| **total** | | **125 829 120** |
+
+BigQuery facture au moins 10 Mio par table lue, d'où des octets facturés
+supérieurs aux octets lus. Le total est pris sur le quota gratuit du Sandbox
+(facturation désactivée) : 0 $.
+
+Recoupement : les sept contrôles sont égaux aux comptes publiés.
+
+| Contrôle | Mesuré | Publié |
+|---|---:|---:|
+| Bronze, métadonnées des tables `yellow_tripdata_202501` à `202503` | 11 198 026 | 11 198 026 |
+| Bronze, somme de `audit_trip_rows` | 11 198 026 | 11 198 026 |
+| `silver.trips`, `COUNT(*)` | 10 381 226 | 10 381 226 |
+| `kept` de l'audit | 10 381 226 | 10 381 226 |
+| quarantaine, `COUNT(*)` | 816 800 | 816 800 |
+| Silver + quarantaine | 11 198 026 | 11 198 026 |
+| somme de `trip_count` de `gold.agg_daily_kpis` | 10 381 226 | 10 381 226 |
+
+Les KPI retrouvent aussi les chiffres de [docs/qualite.md](docs/qualite.md) :
+trajets Silver par mois (K2 : 3 250 924, 3 304 922, 3 825 380), alertes
+`flag_unknown_zone` (K2 : 25 485, 22 419, 24 987) et zones en alerte TLC
+(K4 : 28, 30, 43).
+
+Limites : le script dépend de `gcloud` pour le jeton (pas d'exécution en CI,
+qui n'a pas d'accès à BigQuery) ; les tables expirent fin décembre 2026
+(Sandbox), après quoi il faut reconstruire avant de relancer.
+
 ## PySpark local (voie alternative)
 
 Le pipeline BigQuery ci-dessus reste la voie principale (SQL managé, dashboard
