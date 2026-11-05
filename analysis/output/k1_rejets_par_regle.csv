@@ -1,0 +1,28 @@
+"month","rejection_reason","rule_family","rejected_rows","bronze_rows","rejected_pct"
+"2025-01","invalid_fare","montant ou distance invalide",129637,3475226,3.7303
+"2025-01","invalid_distance","montant ou distance invalide",90994,3475226,2.6184
+"2025-01","zero_duration","horodatage ou durée",1232,3475226,0.0355
+"2025-01","duration_over_6h","horodatage ou durée",1203,3475226,0.0346
+"2025-01","implausible_speed","horodatage ou durée",764,3475226,0.022
+"2025-01","invalid_total","montant ou distance invalide",225,3475226,0.0065
+"2025-01","dropoff_before_pickup","horodatage ou durée",124,3475226,0.0036
+"2025-01","negative_component","horodatage ou durée",101,3475226,0.0029
+"2025-01","pickup_outside_file_month","horodatage ou durée",22,3475226,6e-04
+"2025-02","invalid_fare","montant ou distance invalide",166096,3577543,4.6427
+"2025-02","invalid_distance","montant ou distance invalide",99896,3577543,2.7923
+"2025-02","zero_duration","horodatage ou durée",4403,3577543,0.1231
+"2025-02","duration_over_6h","horodatage ou durée",1133,3577543,0.0317
+"2025-02","implausible_speed","horodatage ou durée",611,3577543,0.0171
+"2025-02","invalid_total","montant ou distance invalide",268,3577543,0.0075
+"2025-02","dropoff_before_pickup","horodatage ou durée",93,3577543,0.0026
+"2025-02","negative_component","horodatage ou durée",90,3577543,0.0025
+"2025-02","pickup_outside_file_month","horodatage ou durée",31,3577543,9e-04
+"2025-03","invalid_fare","montant ou distance invalide",191923,4145257,4.6299
+"2025-03","invalid_distance","montant ou distance invalide",103877,4145257,2.5059
+"2025-03","zero_duration","horodatage ou durée",21428,4145257,0.5169
+"2025-03","duration_over_6h","horodatage ou durée",1373,4145257,0.0331
+"2025-03","implausible_speed","horodatage ou durée",758,4145257,0.0183
+"2025-03","invalid_total","montant ou distance invalide",284,4145257,0.0069
+"2025-03","negative_component","horodatage ou durée",120,4145257,0.0029
+"2025-03","dropoff_before_pickup","horodatage ou durée",81,4145257,0.002
+"2025-03","pickup_outside_file_month","horodatage ou durée",33,4145257,8e-04

@@ -1,0 +1,8 @@
+"check","measured","published","match"
+"bronze (métadonnées, tables yellow_tripdata_AAAAMM)",11198026,11198026,TRUE
+"bronze (somme de audit_trip_rows)",11198026,11198026,TRUE
+"silver.trips (COUNT)",10381226,10381226,TRUE
+"silver.trips = kept de l'audit",10381226,10381226,TRUE
+"quarantaine (COUNT)",816800,816800,TRUE
+"silver + quarantaine",11198026,11198026,TRUE
+"gold.agg_daily_kpis (somme trip_count)",10381226,10381226,TRUE

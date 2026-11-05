@@ -1,0 +1,31 @@
+"month","pickup_rank","zone_id","zone","pickups","share_pct"
+"2025-01",1,161,"Midtown Center (Manhattan)",161256,4.96
+"2025-01",2,237,"Upper East Side South (Manhattan)",157921,4.86
+"2025-01",3,236,"Upper East Side North (Manhattan)",149673,4.6
+"2025-01",4,132,"JFK Airport (Queens)",134708,4.14
+"2025-01",5,230,"Times Sq/Theatre District (Manhattan)",118205,3.64
+"2025-01",6,186,"Penn Station/Madison Sq West (Manhattan)",114074,3.51
+"2025-01",7,162,"Midtown East (Manhattan)",112555,3.46
+"2025-01",8,142,"Lincoln Square East (Manhattan)",105952,3.26
+"2025-01",9,239,"Upper West Side South (Manhattan)",91831,2.82
+"2025-01",10,163,"Midtown North (Manhattan)",91509,2.81
+"2025-02",1,161,"Midtown Center (Manhattan)",152380,4.61
+"2025-02",2,237,"Upper East Side South (Manhattan)",150610,4.56
+"2025-02",3,236,"Upper East Side North (Manhattan)",140607,4.25
+"2025-02",4,132,"JFK Airport (Queens)",115119,3.48
+"2025-02",5,162,"Midtown East (Manhattan)",108067,3.27
+"2025-02",6,186,"Penn Station/Madison Sq West (Manhattan)",107763,3.26
+"2025-02",7,230,"Times Sq/Theatre District (Manhattan)",106840,3.23
+"2025-02",8,142,"Lincoln Square East (Manhattan)",98756,2.99
+"2025-02",9,234,"Union Sq (Manhattan)",95927,2.9
+"2025-02",10,170,"Murray Hill (Manhattan)",90384,2.73
+"2025-03",1,161,"Midtown Center (Manhattan)",171792,4.49
+"2025-03",2,237,"Upper East Side South (Manhattan)",162830,4.26
+"2025-03",3,132,"JFK Airport (Queens)",148082,3.87
+"2025-03",4,236,"Upper East Side North (Manhattan)",144827,3.79
+"2025-03",5,230,"Times Sq/Theatre District (Manhattan)",127420,3.33
+"2025-03",6,186,"Penn Station/Madison Sq West (Manhattan)",126378,3.3
+"2025-03",7,162,"Midtown East (Manhattan)",122205,3.19
+"2025-03",8,142,"Lincoln Square East (Manhattan)",110537,2.89
+"2025-03",9,234,"Union Sq (Manhattan)",106903,2.79
+"2025-03",10,138,"LaGuardia Airport (Queens)",104017,2.72
