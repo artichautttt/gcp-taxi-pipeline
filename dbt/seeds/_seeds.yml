@@ -5,7 +5,30 @@ seeds:
     description: >
       Output of vba/TaxiZoneCleaner.bas on the official TLC taxi_zone_lookup.csv
       (https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv), 265 zones.
+    columns:
+      - name: location_id
+        description: TLC zone id (LocationID), 1 to 265.
+      - name: borough
+        description: Borough of the zone (Unknown for zones 264 and 265).
+      - name: zone
+        description: Zone name.
+      - name: service_zone
+        description: TLC service zone (Boro Zone, Yellow Zone, Airports, EWR, Unknown).
+      - name: is_airport
+        description: True for the airport zones (1 EWR, 132 JFK, 138 LaGuardia).
+      - name: is_unknown
+        description: True for zones 264 and 265 (TLC Unknown / outside of NYC).
   - name: payment_type_lookup
     description: Payment type codes, NYC TLC Yellow Taxi data dictionary.
+    columns:
+      - name: payment_type_id
+        description: TLC payment type code, 0 to 6.
+      - name: payment_type_name
+        description: Label of the code.
   - name: rate_code_lookup
     description: Rate code codes, NYC TLC Yellow Taxi data dictionary (99 = Null/unknown).
+    columns:
+      - name: rate_code_id
+        description: TLC rate code, 1 to 6, or 99 (Null/unknown).
+      - name: rate_code_name
+        description: Label of the code.

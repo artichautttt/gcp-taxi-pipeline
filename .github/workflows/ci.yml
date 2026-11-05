@@ -40,6 +40,11 @@ jobs:
       - run: pip install dbt-core==1.12.6 dbt-bigquery==1.12.1
       - name: dbt parse
         run: dbt parse --project-dir dbt --profiles-dir dbt
+      - name: Documentation coverage (schema yml, no catalog)
+        # Every object and every column declared in the schema yml files has a
+        # description. Columns that exist in BigQuery but are not declared need
+        # the catalog (dbt docs generate, so BigQuery): checked locally.
+        run: python scripts/dbt_catalog.py coverage --no-catalog --fail-under 100
       - name: dbt compile (no credentials)
         # dbt-bigquery builds a client before compiling, and the client needs
         # some ADC. A dummy authorized_user file (fake values, not a secret)
@@ -75,4 +80,4 @@ jobs:
       - run: >
           python -m pytest -v tests/test_dags.py tests/test_quality_gate.py tests/test_bronze.py
           tests/test_tlc_zone_trips_xml.py tests/test_idempotence_and_iam.py
-          tests/test_download_taxi_data.py tests/test_check_secrets.py
+          tests/test_download_taxi_data.py tests/test_check_secrets.py tests/test_dbt_catalog.py

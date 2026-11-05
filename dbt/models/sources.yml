@@ -9,19 +9,66 @@ sources:
       - name: yellow_tripdata_raw
         description: Raw NYC TLC Yellow Taxi trips, loaded as-is from Parquet.
         columns:
+          - name: VendorID
+            description: "{{ doc('tlc_vendor_id') }}"
           - name: tpep_pickup_datetime
+            description: "{{ doc('tlc_pickup_datetime') }}"
             data_tests: [not_null]
           - name: tpep_dropoff_datetime
+            description: "{{ doc('tlc_dropoff_datetime') }}"
             data_tests: [not_null]
+          - name: passenger_count
+            description: "{{ doc('tlc_passenger_count') }}"
+          - name: trip_distance
+            description: "{{ doc('tlc_trip_distance') }}"
+          - name: RatecodeID
+            description: "{{ doc('tlc_rate_code_id') }}"
+          - name: store_and_fwd_flag
+            description: "{{ doc('tlc_store_and_fwd_flag') }}"
+          - name: PULocationID
+            description: "{{ doc('tlc_pickup_zone') }}"
+          - name: DOLocationID
+            description: "{{ doc('tlc_dropoff_zone') }}"
+          - name: payment_type
+            description: "{{ doc('tlc_payment_type') }}"
+          - name: fare_amount
+            description: "{{ doc('tlc_fare_amount') }}"
+          - name: extra
+            description: "{{ doc('tlc_extra') }}"
+          - name: mta_tax
+            description: "{{ doc('tlc_mta_tax') }}"
+          - name: tip_amount
+            description: "{{ doc('tlc_tip_amount') }}"
+          - name: tolls_amount
+            description: "{{ doc('tlc_tolls_amount') }}"
+          - name: improvement_surcharge
+            description: "{{ doc('tlc_improvement_surcharge') }}"
+          - name: total_amount
+            description: "{{ doc('tlc_total_amount') }}"
+          - name: congestion_surcharge
+            description: "{{ doc('tlc_congestion_surcharge') }}"
+          - name: airport_fee
+            description: "{{ doc('tlc_airport_fee') }}"
 
       - name: trips_clean
         description: Filtered trips with derived columns (sql/02_transform_trips_clean.sql).
         columns:
+          - name: VendorID
+            description: "{{ doc('tlc_vendor_id') }}"
           - name: tpep_pickup_datetime
+            description: "{{ doc('tlc_pickup_datetime') }}"
             data_tests: [not_null]
           - name: tpep_dropoff_datetime
+            description: "{{ doc('tlc_dropoff_datetime') }}"
             data_tests: [not_null]
+          - name: trip_duration_min
+            description: Drop-off minus pickup, in minutes (not rounded).
+          - name: passenger_count
+            description: "{{ doc('tlc_passenger_count') }}"
+          - name: avg_speed_mph
+            description: trip_distance divided by the duration in hours (null when the duration is 0).
           - name: pickup_date
+            description: Pickup day (date of tpep_pickup_datetime).
             data_tests:
               - not_null
               - value_between:
@@ -29,10 +76,15 @@ sources:
                     min_value: "date '2024-01-01'"
                     max_value: "date '2025-12-31'"
           - name: PULocationID
+            description: "{{ doc('tlc_pickup_zone') }}"
             data_tests: [not_null]
           - name: DOLocationID
+            description: "{{ doc('tlc_dropoff_zone') }}"
             data_tests: [not_null]
+          - name: payment_type
+            description: "{{ doc('tlc_payment_type') }}"
           - name: trip_distance
+            description: "{{ doc('tlc_trip_distance') }}"
             data_tests:
               - positive
               - value_between:
@@ -40,12 +92,22 @@ sources:
                     min_value: 0
                     max_value: 200
           - name: fare_amount
+            description: "{{ doc('tlc_fare_amount') }}"
             data_tests:
               - value_between:
                   arguments:
                     min_value: 0
                     max_value: 1000
+          - name: tip_amount
+            description: "{{ doc('tlc_tip_amount') }}"
+          - name: tolls_amount
+            description: "{{ doc('tlc_tolls_amount') }}"
+          - name: total_amount
+            description: "{{ doc('tlc_total_amount') }}"
+          - name: pickup_hour
+            description: Pickup hour, 0 to 23.
           - name: pickup_weekday
+            description: English weekday name of the pickup day.
             data_tests:
               - accepted_values:
                   arguments:
@@ -55,8 +117,21 @@ sources:
         description: One row per pickup date (sql/03_analytics_daily_kpis.sql).
         columns:
           - name: pickup_date
+            description: Pickup day, one row per day.
             data_tests: [unique, not_null]
+          - name: pickup_weekday
+            description: English weekday name of the pickup day.
           - name: trip_count
+            description: Trips of trips_clean picked up that day.
             data_tests: [not_null, positive]
+          - name: avg_distance_mi
+            description: Average trip distance in miles, rounded to 2 decimals.
+          - name: avg_duration_min
+            description: Average trip duration in minutes, rounded to 2 decimals.
+          - name: avg_total_amount_usd
+            description: Average total_amount in USD, rounded to 2 decimals.
           - name: revenue_usd
+            description: Sum of total_amount in USD, rounded to 2 decimals.
             data_tests: [not_null, positive]
+          - name: avg_tip_pct
+            description: Average of tip_amount / fare_amount per trip, in %, rounded to 1 decimal (trips with a zero fare ignored).
