@@ -20,7 +20,10 @@ Documentation détaillée :
 - [docs/modele_de_donnees.md](docs/modele_de_donnees.md) : colonnes de chaque
   table, par couche ;
 - [docs/qualite.md](docs/qualite.md) : chaque règle de rejet et d'alerte, sa
-  justification et ses comptes mesurés.
+  justification et ses comptes mesurés ;
+- [docs/data_dictionary.md](docs/data_dictionary.md) : dictionnaire de données
+  généré depuis le manifest et le catalog dbt (toutes les colonnes, types,
+  descriptions et tests ; voir « Catalogue de données dbt »).
 
 ## Problème
 
@@ -603,6 +606,53 @@ Le téléchargement écrit dans `<fichier>.part`, vérifie la taille reçue cont
 `Content-Length`, puis renomme : une coupure ne laisse jamais de Parquet
 tronqué qu'une relance réutiliserait (`tests/test_download_taxi_data.py`).
 
+### Catalogue de données dbt
+
+Chaque source, seed et modèle, et chacune de leurs colonnes, a une
+description dans les `schema.yml`. Les termes métier et les colonnes
+partagées par plusieurs tables (règles de rejet, quarantaine, alertes,
+contrôle TLC, champs du fichier TLC, colonnes d'ingestion) sont des doc blocks
+de `dbt/models/_docs.md`, écrits une fois et repris par `{{ doc('...') }}`.
+
+```bash
+# catalog : colonnes et types réels (requêtes de métadonnées, Sandbox)
+.venv-dbt\Scripts\dbt docs generate --project-dir dbt --profiles-dir dbt --vars "{pipeline_month: 202503}"
+python scripts/dbt_catalog.py coverage      # % de colonnes décrites
+python scripts/dbt_catalog.py dictionary    # régénère docs/data_dictionary.md
+```
+
+Mesure du 2026-11-05 (`scripts/dbt_catalog.py coverage`, catalog du jour) :
+
+| | Avant (`main`) | Après |
+|---|---:|---:|
+| objets décrits (sources, seeds, modèles) | 21 / 24 | 24 / 24 |
+| colonnes déclarées dans les yml et décrites | 11 / 58 | 293 / 293 |
+| colonnes réelles BigQuery décrites | 11 / 261 (4,2 %) | 261 / 261 (100 %) |
+| doc blocks | 0 | 37 |
+
+Les 261 colonnes réelles sont lues dans le catalog (227) et, pour les deux
+sources Bronze lues par wildcard (`yellow_tripdata_*`, `tlc_zone_trips_*`)
+que le catalog dbt ne contient pas, dans le schéma BigQuery (34). Les
+293 colonnes déclarées comptent en plus les 32 colonnes du modèle éphémère
+`int_trips_classified`, qui n'a pas de table.
+
+`dbt test` relancé après l'ajout des descriptions (2026-11-05, `--vars
+"{pipeline_month: 202503}"`) : PASS=101, WARN=1 (contrôle XML TLC, non
+bloquant, 101 zones en alerte), ERROR=0, sur 102 tests. Le SQL compilé des
+tests est identique avant et après. Volume facturé sur le quota gratuit :
+2 766 143 488 octets (lu dans `run_results.json`).
+
+Limites :
+- le dictionnaire n'est publié nulle part : `dbt docs serve` reste local ;
+- `silver.quality_report`, `bronze.ingestion_log` et `nyc_taxi.taxi_zones`
+  sont écrits par Python, pas déclarés dans dbt : ils restent décrits dans
+  [docs/modele_de_donnees.md](docs/modele_de_donnees.md), pas dans le catalog ;
+- les tables wildcard et le modèle éphémère n'ont pas de type dans le
+  dictionnaire (absents du catalog dbt) ;
+- la CI vérifie que toute colonne **déclarée** est décrite (`coverage
+  --no-catalog --fail-under 100`) ; une colonne ajoutée en SQL sans être
+  déclarée ne se voit qu'avec le catalog, donc en local.
+
 ### Ce que vérifie la CI (et ce qu'elle ne vérifie pas)
 
 GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
@@ -615,9 +665,13 @@ GitHub Actions (`.github/workflows/ci.yml`) tourne sans aucun secret ni accès
   d'envoyer la moindre requête. **Le compile en CI n'interroge jamais
   BigQuery** ; il vérifie que les 15 modèles, 81 tests de données et 21 tests unitaires
   se rendent en SQL ;
-- pytest (60 tests), dont l'import réel des deux DAG par le `DagBag`
-  d'Airflow 3.3.2, l'ingestion Bronze et XML, le contrôle qualité et
-  l'idempotence sur un faux client BigQuery.
+- la couverture de la documentation dbt : toute colonne déclarée dans les
+  `schema.yml` a une description (`scripts/dbt_catalog.py coverage
+  --no-catalog --fail-under 100`, sur le manifest de `dbt parse`) ;
+- pytest, dont l'import réel des deux DAG par le `DagBag`
+  d'Airflow 3.3.2, l'ingestion Bronze et XML, le contrôle qualité,
+  l'idempotence sur un faux client BigQuery et le script de catalogue
+  (`tests/test_dbt_catalog.py`, 11 tests).
 
 **Les 82 tests dbt du médaillon (dont les 21 unitaires) ne tournent pas en
 CI** : un test unitaire dbt s'exécute aussi sur BigQuery. Ils tournent en
