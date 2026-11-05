@@ -6,6 +6,10 @@ models:
       Star-schema fact table, one row per trip of silver.trips (view, no copy).
       Rejected rows are not here: see silver.trips_quarantine.
     columns:
+      - name: trip_id
+        description: "{{ doc('trip_id') }}"
+      - name: pickup_month
+        description: "{{ doc('pickup_month') }}"
       - name: pickup_date
         description: Pickup day, key to dim_date.
         data_tests:
@@ -13,49 +17,114 @@ models:
               arguments:
                 to: ref('dim_date')
                 field: date_day
+      - name: pickup_datetime
+        description: "{{ doc('tlc_pickup_datetime') }}"
+      - name: dropoff_datetime
+        description: "{{ doc('tlc_dropoff_datetime') }}"
       - name: pickup_zone_id
+        description: Pickup zone, key to dim_zones.
         data_tests:
           - relationships:
               arguments:
                 to: ref('dim_zones')
                 field: zone_id
       - name: dropoff_zone_id
+        description: Drop-off zone, key to dim_zones.
         data_tests:
           - relationships:
               arguments:
                 to: ref('dim_zones')
                 field: zone_id
       - name: payment_type_id
+        description: Payment type, key to dim_payment_type.
         data_tests:
           - relationships:
               arguments:
                 to: ref('dim_payment_type')
                 field: payment_type_id
       - name: rate_code_id
+        description: Rate code (99 when null in the source), key to dim_rate_code.
         data_tests:
           - relationships:
               arguments:
                 to: ref('dim_rate_code')
                 field: rate_code_id
+      - name: vendor_id
+        description: "{{ doc('tlc_vendor_id') }}"
+      - name: passenger_count
+        description: "{{ doc('tlc_passenger_count') }}"
+      - name: trip_distance_mi
+        description: "{{ doc('tlc_trip_distance') }}"
+      - name: trip_duration_min
+        description: Drop-off minus pickup, in minutes, rounded to 2 decimals.
+      - name: avg_speed_mph
+        description: trip_distance_mi divided by the duration in hours.
+      - name: fare_amount
+        description: "{{ doc('tlc_fare_amount') }}"
+      - name: extra
+        description: "{{ doc('tlc_extra') }}"
+      - name: mta_tax
+        description: "{{ doc('tlc_mta_tax') }}"
+      - name: tip_amount
+        description: "{{ doc('tlc_tip_amount') }}"
+      - name: tolls_amount
+        description: "{{ doc('tlc_tolls_amount') }}"
+      - name: improvement_surcharge
+        description: "{{ doc('tlc_improvement_surcharge') }}"
+      - name: congestion_surcharge
+        description: "{{ doc('tlc_congestion_surcharge') }}"
+      - name: airport_fee
+        description: "{{ doc('tlc_airport_fee') }}"
+      - name: total_amount
+        description: "{{ doc('tlc_total_amount') }}"
+      - name: flag_unknown_zone
+        description: "{{ doc('flag_unknown_zone') }}"
+      - name: flag_passenger_count
+        description: "{{ doc('flag_passenger_count') }}"
+      - name: flag_short_trip
+        description: "{{ doc('flag_short_trip') }}"
 
   - name: agg_daily_kpis
     description: Daily indicators per pickup day (trips, revenue, averages).
     columns:
+      - name: pickup_month
+        description: "{{ doc('pickup_month') }}"
       - name: pickup_date
+        description: Pickup day, one row per day.
         data_tests: [unique, not_null]
       - name: trip_count
+        description: Trips of fct_trips picked up that day.
         data_tests: [not_null, positive]
+      - name: revenue_usd
+        description: Sum of total_amount in USD, rounded to 2 decimals.
+      - name: avg_distance_mi
+        description: Average trip_distance_mi, rounded to 2 decimals.
+      - name: avg_duration_min
+        description: Average trip_duration_min, rounded to 2 decimals.
+      - name: avg_total_amount_usd
+        description: Average total_amount in USD, rounded to 2 decimals.
+      - name: avg_tip_pct
+        description: Average of tip_amount / fare_amount per trip, in %, rounded to 1 decimal (trips with a zero fare ignored).
+      - name: trips_unknown_zone
+        description: Trips of the day with flag_unknown_zone (warning, rows kept).
 
   - name: agg_zone_monthly
     description: Pickups and drop-offs per zone and month.
     columns:
+      - name: pickup_month
+        description: "{{ doc('pickup_month') }}"
       - name: zone_id
+        description: TLC zone, key to dim_zones.
         data_tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_zones')
                 field: zone_id
+      - name: pickups
+        description: Trips of the month picked up in the zone (0 when none).
+      - name: dropoffs
+        description: Trips of the month dropped off in the zone (0 when none).
 
   - name: tlc_zone_reconciliation
     description: >
@@ -65,43 +134,93 @@ models:
       tlc_alert_min_trips). Never blocking.
     columns:
       - name: month
+        description: Month YYYYMM; only months with both a bronze trip file and a TLC publication.
         data_tests: [not_null]
       - name: zone_id
+        description: TLC zone.
         data_tests: [not_null]
+      - name: zone_name
+        description: Zone name from dim_zones.
+      - name: borough
+        description: Borough from dim_zones.
+      - name: tlc_pickups
+        description: Yellow Taxi pickups published by the TLC (after its own filtering); 0 when the zone is not published.
+      - name: bronze_pickups
+        description: Bronze rows of the month picked up in the zone (pickup inside the file month).
+      - name: kept_pickups
+        description: The same, after the silver rejection rules (agg_zone_monthly).
+      - name: gap_bronze
+        description: bronze_pickups - tlc_pickups.
+      - name: gap_bronze_pct
+        description: gap_bronze in % of tlc_pickups, rounded to 2 decimals (null when tlc_pickups is 0).
+      - name: gap_kept_pct
+        description: (kept_pickups - tlc_pickups) in % of tlc_pickups, rounded to 2 decimals (null when tlc_pickups is 0).
+      - name: is_alert
+        description: "{{ doc('tlc_alert') }}"
 
   - name: dim_zones
     description: NYC taxi zones (265 rows, 2 unknown, 3 airports).
     columns:
       - name: zone_id
+        description: TLC zone id (LocationID), 1 to 265.
         data_tests: [unique, not_null]
       - name: borough
+        description: Borough of the zone (Unknown for zones 264 and 265).
         data_tests:
           - not_null
           - accepted_values:
               arguments:
                 values: [Bronx, Brooklyn, EWR, Manhattan, Queens, Staten Island, Unknown]
+      - name: zone_name
+        description: Zone name.
+      - name: service_zone
+        description: TLC service zone (Boro Zone, Yellow Zone, Airports, EWR, Unknown).
+      - name: is_airport
+        description: True for the airport zones (1 EWR, 132 JFK, 138 LaGuardia).
+      - name: is_unknown
+        description: True for zones 264 and 265 (TLC Unknown / outside of NYC).
 
   - name: dim_payment_type
+    description: Payment types, codes from the TLC Yellow Taxi data dictionary (seed payment_type_lookup).
     columns:
       - name: payment_type_id
+        description: TLC payment type code, 0 to 6.
         data_tests: [unique, not_null]
       - name: payment_type_name
+        description: Label of the code (e.g. Credit card, Cash, Flex Fare trip).
         data_tests: [not_null]
 
   - name: dim_rate_code
+    description: Rate codes, codes from the TLC Yellow Taxi data dictionary (seed rate_code_lookup).
     columns:
       - name: rate_code_id
+        description: TLC rate code, 1 to 6, or 99 (Null/unknown).
         data_tests: [unique, not_null]
       - name: rate_code_name
+        description: Label of the code (e.g. Standard rate, JFK, Negotiated fare).
         data_tests: [not_null]
 
   - name: dim_date
     description: Calendar from var dim_date_start to dim_date_end.
     columns:
       - name: date_day
+        description: Calendar day.
         data_tests: [unique, not_null]
+      - name: calendar_year
+        description: Year.
+      - name: calendar_quarter
+        description: Quarter, 1 to 4.
+      - name: calendar_month
+        description: Month, 1 to 12.
+      - name: year_month
+        description: Year * 100 + month (YYYYMM), comparable with pickup_month.
+      - name: day_of_month
+        description: Day of the month, 1 to 31.
       - name: weekday_name
+        description: English weekday name.
         data_tests:
           - accepted_values:
               arguments:
                 values: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+      - name: is_weekend
+        description: True on Saturday and Sunday.

@@ -9,6 +9,50 @@ models:
       - name: source_month
         description: Month of the bronze file (YYYYMM), from the table suffix.
         data_tests: [not_null]
+      - name: vendor_id
+        description: "{{ doc('tlc_vendor_id') }}"
+      - name: pickup_datetime
+        description: "{{ doc('tlc_pickup_datetime') }}"
+      - name: dropoff_datetime
+        description: "{{ doc('tlc_dropoff_datetime') }}"
+      - name: passenger_count
+        description: "{{ doc('tlc_passenger_count') }}"
+      - name: trip_distance
+        description: "{{ doc('tlc_trip_distance') }}"
+      - name: rate_code_id
+        description: "{{ doc('tlc_rate_code_id') }}"
+      - name: store_and_fwd_flag
+        description: "{{ doc('tlc_store_and_fwd_flag') }}"
+      - name: pickup_zone_id
+        description: "{{ doc('tlc_pickup_zone') }}"
+      - name: dropoff_zone_id
+        description: "{{ doc('tlc_dropoff_zone') }}"
+      - name: payment_type_id
+        description: "{{ doc('tlc_payment_type') }}"
+      - name: fare_amount
+        description: "{{ doc('tlc_fare_amount') }}"
+      - name: extra
+        description: "{{ doc('tlc_extra') }}"
+      - name: mta_tax
+        description: "{{ doc('tlc_mta_tax') }}"
+      - name: tip_amount
+        description: "{{ doc('tlc_tip_amount') }}"
+      - name: tolls_amount
+        description: "{{ doc('tlc_tolls_amount') }}"
+      - name: improvement_surcharge
+        description: "{{ doc('tlc_improvement_surcharge') }}"
+      - name: total_amount
+        description: "{{ doc('tlc_total_amount') }}"
+      - name: congestion_surcharge
+        description: "{{ doc('tlc_congestion_surcharge') }}"
+      - name: airport_fee
+        description: "{{ doc('tlc_airport_fee') }}"
+      - name: source_file
+        description: "{{ doc('ingestion_source_file') }}"
+      - name: bronze_loaded_at
+        description: "{{ doc('ingestion_loaded_at') }}"
+      - name: ingestion_run_id
+        description: "{{ doc('ingestion_run_id') }}"
 
   - name: stg_taxi_zone_lookup
     description: Raw TLC zone lookup (bronze CSV), LocationID cast to an integer.
@@ -16,16 +60,119 @@ models:
       - name: location_id
         description: Null when LocationID is not an integer (the test fails then).
         data_tests: [not_null, unique]
+      - name: location_id_raw
+        description: LocationID as received (text).
+      - name: borough
+        description: Borough, raw value.
+      - name: zone
+        description: Zone name, raw value.
+      - name: service_zone
+        description: TLC service zone, raw value.
+      - name: source_file
+        description: "{{ doc('ingestion_source_file') }}"
+      - name: bronze_loaded_at
+        description: "{{ doc('ingestion_loaded_at') }}"
 
   - name: stg_tlc_zone_trips
     description: TLC published pickups / drop-offs per zone and month (bronze XML), typed.
     columns:
+      - name: source_month
+        description: Month of the bronze table (YYYYMM), from the table suffix.
       - name: metric_month
+        description: Month the TLC count refers to (YYYYMM), parsed from the published date.
         data_tests: [not_null]
+      - name: industry
+        description: TLC industry (Yellow Taxi).
+      - name: pickup_dropoff
+        description: Pick-up or Drop-off.
       - name: zone_id
+        description: TLC zone id (null when the published value is not an integer).
         data_tests: [not_null]
+      - name: borough
+        description: Borough, as published.
+      - name: zone_name
+        description: Zone name, as published.
       - name: trip_count
+        description: Trips published by the TLC for the zone, month and direction.
         data_tests: [not_null]
+      - name: source_file
+        description: "{{ doc('ingestion_source_file') }}"
+      - name: bronze_loaded_at
+        description: "{{ doc('ingestion_loaded_at') }}"
+
+  - name: int_trips_classified
+    description: >
+      Ephemeral (no table): every bronze row of the month being built
+      (var pipeline_month), with its fingerprint, the first rejection rule it
+      breaks and the three warning flags. Feeds trips, trips_quarantine and
+      audit_trip_rows. {{ doc('rejection_rules') }}
+    columns:
+      - name: source_month
+        description: "{{ doc('source_month') }}"
+      - name: vendor_id
+        description: "{{ doc('tlc_vendor_id') }}"
+      - name: pickup_datetime
+        description: "{{ doc('tlc_pickup_datetime') }}"
+      - name: dropoff_datetime
+        description: "{{ doc('tlc_dropoff_datetime') }}"
+      - name: passenger_count
+        description: "{{ doc('tlc_passenger_count') }}"
+      - name: trip_distance
+        description: "{{ doc('tlc_trip_distance') }}"
+      - name: rate_code_id
+        description: "{{ doc('tlc_rate_code_id') }}"
+      - name: store_and_fwd_flag
+        description: "{{ doc('tlc_store_and_fwd_flag') }}"
+      - name: pickup_zone_id
+        description: "{{ doc('tlc_pickup_zone') }}"
+      - name: dropoff_zone_id
+        description: "{{ doc('tlc_dropoff_zone') }}"
+      - name: payment_type_id
+        description: "{{ doc('tlc_payment_type') }}"
+      - name: fare_amount
+        description: "{{ doc('tlc_fare_amount') }}"
+      - name: extra
+        description: "{{ doc('tlc_extra') }}"
+      - name: mta_tax
+        description: "{{ doc('tlc_mta_tax') }}"
+      - name: tip_amount
+        description: "{{ doc('tlc_tip_amount') }}"
+      - name: tolls_amount
+        description: "{{ doc('tlc_tolls_amount') }}"
+      - name: improvement_surcharge
+        description: "{{ doc('tlc_improvement_surcharge') }}"
+      - name: total_amount
+        description: "{{ doc('tlc_total_amount') }}"
+      - name: congestion_surcharge
+        description: "{{ doc('tlc_congestion_surcharge') }}"
+      - name: airport_fee
+        description: "{{ doc('tlc_airport_fee') }}"
+      - name: source_file
+        description: "{{ doc('ingestion_source_file') }}"
+      - name: bronze_loaded_at
+        description: "{{ doc('ingestion_loaded_at') }}"
+      - name: ingestion_run_id
+        description: "{{ doc('ingestion_run_id') }}"
+      - name: trip_id
+        description: "{{ doc('trip_id') }}"
+      - name: copy_rank
+        description: Rank of the row among its exact copies (same trip_id); above 1 means rule duplicate.
+      - name: pickup_month
+        description: Month of pickup_datetime (YYYYMM), compared with source_month.
+      - name: duration_s
+        description: Drop-off minus pickup, in seconds.
+      - name: business_key_rank
+        description: >
+          Rank of the row among the rows with the same vendor, timestamps,
+          zones, distance and total; above 1 means rule duplicate_business_key.
+      - name: exclusion_reason
+        description: "{{ doc('exclusion_reason') }}"
+      - name: flag_unknown_zone
+        description: "{{ doc('flag_unknown_zone') }}"
+      - name: flag_passenger_count
+        description: "{{ doc('flag_passenger_count') }}"
+      - name: flag_short_trip
+        description: "{{ doc('flag_short_trip') }}"
 
   - name: trips
     description: >
@@ -39,11 +186,20 @@ models:
       - name: pickup_month
         description: Pickup month YYYYMM, equal to the bronze file month. Partition key.
         data_tests: [not_null]
+      - name: pickup_date
+        description: Pickup day (date of pickup_datetime).
+      - name: pickup_datetime
+        description: "{{ doc('tlc_pickup_datetime') }}"
+      - name: dropoff_datetime
+        description: "{{ doc('tlc_dropoff_datetime') }}"
       - name: pickup_zone_id
+        description: "{{ doc('tlc_pickup_zone') }}"
         data_tests: [not_null]
       - name: dropoff_zone_id
+        description: "{{ doc('tlc_dropoff_zone') }}"
         data_tests: [not_null]
       - name: payment_type_id
+        description: "{{ doc('tlc_payment_type') }}"
         data_tests: [not_null]
       - name: rate_code_id
         description: TLC rate code; null in the source (Flex Fare rows) is mapped to 99 (Null/unknown).
@@ -55,46 +211,71 @@ models:
               arguments:
                 values: [1, 2, 6, 7]
                 quote: false
+      - name: passenger_count
+        description: "{{ doc('tlc_passenger_count') }}"
       - name: trip_distance_mi
+        description: "{{ doc('tlc_trip_distance') }}"
         data_tests:
           - value_between:
               arguments:
                 min_value: 0.01
                 max_value: 200
       - name: trip_duration_min
+        description: Drop-off minus pickup, in minutes, rounded to 2 decimals.
         data_tests:
           - value_between:
               arguments:
                 min_value: 0.01
                 max_value: 360
       - name: avg_speed_mph
+        description: trip_distance_mi divided by the duration in hours.
         data_tests:
           - value_between:
               arguments:
                 min_value: 0
                 max_value: 100
       - name: fare_amount
+        description: "{{ doc('tlc_fare_amount') }}"
         data_tests:
           - value_between:
               arguments:
                 min_value: 0
                 max_value: 1000
+      - name: extra
+        description: "{{ doc('tlc_extra') }}"
+      - name: mta_tax
+        description: "{{ doc('tlc_mta_tax') }}"
+      - name: tip_amount
+        description: "{{ doc('tlc_tip_amount') }}"
+      - name: tolls_amount
+        description: "{{ doc('tlc_tolls_amount') }}"
+      - name: improvement_surcharge
+        description: "{{ doc('tlc_improvement_surcharge') }}"
+      - name: congestion_surcharge
+        description: "{{ doc('tlc_congestion_surcharge') }}"
+      - name: airport_fee
+        description: "{{ doc('tlc_airport_fee') }}"
+      - name: total_amount
+        description: "{{ doc('tlc_total_amount') }}"
       - name: flag_unknown_zone
-        description: Warning, row kept. Pickup or drop-off in zone 264 or 265 (TLC "Unknown").
+        description: "{{ doc('flag_unknown_zone') }}"
       - name: flag_passenger_count
-        description: Warning, row kept. passenger_count null, 0 or above 6.
+        description: "{{ doc('flag_passenger_count') }}"
       - name: flag_short_trip
-        description: Warning, row kept. Trip under 60 seconds.
+        description: "{{ doc('flag_short_trip') }}"
 
   - name: trips_quarantine
     description: >
       Rejected rows of each month, as received in bronze, with the rule
       (rejection_reason), the run that rejected them (run_id) and when.
       Replaced month by month: a re-run does not stack a second copy.
+      {{ doc('quarantine') }}
     columns:
       - name: source_month
+        description: "{{ doc('source_month') }} Partition key."
         data_tests: [not_null]
       - name: rejection_reason
+        description: "{{ doc('rejection_reason') }}"
         data_tests:
           - not_null
           - accepted_values:
@@ -118,9 +299,57 @@ models:
                   - duplicate
                   - duplicate_business_key
       - name: run_id
+        description: "{{ doc('run_id') }}"
         data_tests: [not_null]
+      - name: quarantined_at
+        description: Time the row was written to quarantine (UTC).
       - name: trip_id
+        description: "{{ doc('trip_id') }}"
         data_tests: [not_null]
+      - name: vendor_id
+        description: "{{ doc('tlc_vendor_id') }}"
+      - name: pickup_datetime
+        description: "{{ doc('tlc_pickup_datetime') }}"
+      - name: dropoff_datetime
+        description: "{{ doc('tlc_dropoff_datetime') }}"
+      - name: passenger_count
+        description: "{{ doc('tlc_passenger_count') }}"
+      - name: trip_distance
+        description: "{{ doc('tlc_trip_distance') }}"
+      - name: rate_code_id
+        description: "{{ doc('tlc_rate_code_id') }}"
+      - name: store_and_fwd_flag
+        description: "{{ doc('tlc_store_and_fwd_flag') }}"
+      - name: pickup_zone_id
+        description: "{{ doc('tlc_pickup_zone') }}"
+      - name: dropoff_zone_id
+        description: "{{ doc('tlc_dropoff_zone') }}"
+      - name: payment_type_id
+        description: "{{ doc('tlc_payment_type') }}"
+      - name: fare_amount
+        description: "{{ doc('tlc_fare_amount') }}"
+      - name: extra
+        description: "{{ doc('tlc_extra') }}"
+      - name: mta_tax
+        description: "{{ doc('tlc_mta_tax') }}"
+      - name: tip_amount
+        description: "{{ doc('tlc_tip_amount') }}"
+      - name: tolls_amount
+        description: "{{ doc('tlc_tolls_amount') }}"
+      - name: improvement_surcharge
+        description: "{{ doc('tlc_improvement_surcharge') }}"
+      - name: total_amount
+        description: "{{ doc('tlc_total_amount') }}"
+      - name: congestion_surcharge
+        description: "{{ doc('tlc_congestion_surcharge') }}"
+      - name: airport_fee
+        description: "{{ doc('tlc_airport_fee') }}"
+      - name: source_file
+        description: "{{ doc('ingestion_source_file') }}"
+      - name: bronze_loaded_at
+        description: "{{ doc('ingestion_loaded_at') }}"
+      - name: ingestion_run_id
+        description: "{{ doc('ingestion_run_id') }}"
 
   - name: audit_trip_rows
     description: >
@@ -128,9 +357,10 @@ models:
       quarantined, per rule (one reason per row, first rule broken).
     columns:
       - name: source_month
+        description: "{{ doc('source_month') }} Partition key."
         data_tests: [not_null]
       - name: row_outcome
-        description: kept, or the rejection rule (see int_trips_classified.sql).
+        description: "{{ doc('row_outcome') }}"
         data_tests:
           - not_null
           - accepted_values:
@@ -154,6 +384,8 @@ models:
                   - duplicate
                   - duplicate_business_key
       - name: row_count
+        description: Rows of the month with this outcome; per month, the sum equals the bronze rows (tested).
         data_tests: [not_null, positive]
       - name: run_id
+        description: "{{ doc('run_id') }}"
         data_tests: [not_null]

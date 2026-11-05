@@ -13,10 +13,97 @@ sources:
       - name: yellow_tripdata
         identifier: "yellow_tripdata_*"
         description: NYC TLC Yellow Taxi trip records (Parquet), all loaded months.
+        columns:
+          - name: VendorID
+            description: "{{ doc('tlc_vendor_id') }}"
+          - name: tpep_pickup_datetime
+            description: "{{ doc('tlc_pickup_datetime') }}"
+          - name: tpep_dropoff_datetime
+            description: "{{ doc('tlc_dropoff_datetime') }}"
+          - name: passenger_count
+            description: "{{ doc('tlc_passenger_count') }}"
+          - name: trip_distance
+            description: "{{ doc('tlc_trip_distance') }}"
+          - name: RatecodeID
+            description: "{{ doc('tlc_rate_code_id') }}"
+          - name: store_and_fwd_flag
+            description: "{{ doc('tlc_store_and_fwd_flag') }}"
+          - name: PULocationID
+            description: "{{ doc('tlc_pickup_zone') }}"
+          - name: DOLocationID
+            description: "{{ doc('tlc_dropoff_zone') }}"
+          - name: payment_type
+            description: "{{ doc('tlc_payment_type') }}"
+          - name: fare_amount
+            description: "{{ doc('tlc_fare_amount') }}"
+          - name: extra
+            description: "{{ doc('tlc_extra') }}"
+          - name: mta_tax
+            description: "{{ doc('tlc_mta_tax') }}"
+          - name: tip_amount
+            description: "{{ doc('tlc_tip_amount') }}"
+          - name: tolls_amount
+            description: "{{ doc('tlc_tolls_amount') }}"
+          - name: improvement_surcharge
+            description: "{{ doc('tlc_improvement_surcharge') }}"
+          - name: total_amount
+            description: "{{ doc('tlc_total_amount') }}"
+          - name: congestion_surcharge
+            description: "{{ doc('tlc_congestion_surcharge') }}"
+          - name: airport_fee
+            description: "{{ doc('tlc_airport_fee') }}"
+          - name: _source
+            description: "{{ doc('ingestion_source') }}"
+          - name: _source_file
+            description: "{{ doc('ingestion_source_file') }}"
+          - name: _loaded_at
+            description: "{{ doc('ingestion_loaded_at') }}"
+          - name: _run_id
+            description: "{{ doc('ingestion_run_id') }}"
       - name: taxi_zone_lookup
         description: Official TLC taxi_zone_lookup.csv, every column as a string.
+        columns:
+          - name: LocationID
+            description: TLC zone id as text (1 to 265).
+          - name: Borough
+            description: Borough of the zone, raw value (Unknown and N/A included).
+          - name: Zone
+            description: Zone name, raw value.
+          - name: service_zone
+            description: TLC service zone, raw value (e.g. Yellow Zone, Boro Zone, Airports, EWR).
+          - name: _source
+            description: "{{ doc('ingestion_source') }}"
+          - name: _source_file
+            description: "{{ doc('ingestion_source_file') }}"
+          - name: _loaded_at
+            description: "{{ doc('ingestion_loaded_at') }}"
+          - name: _run_id
+            description: "{{ doc('ingestion_run_id') }}"
       - name: tlc_zone_trips
         identifier: "tlc_zone_trips_*"
         description: >
           NYC Open Data c5iv-bn4s (XML), Yellow Taxi pickups and drop-offs per
           zone and month published by the TLC. Every field as a string.
+        columns:
+          - name: metric_month
+            description: First day of the month the count refers to, as text (e.g. 2025-01-01).
+          - name: industry
+            description: TLC industry; only Yellow Taxi is downloaded.
+          - name: pickup_dropoff
+            description: Pick-up or Drop-off.
+          - name: locationid
+            description: TLC zone id, as text.
+          - name: borough
+            description: Borough of the zone, as published.
+          - name: zone
+            description: Zone name, as published.
+          - name: trip_count
+            description: Trips published by the TLC for the zone, month and direction, as text.
+          - name: _source
+            description: "{{ doc('ingestion_source') }}"
+          - name: _source_file
+            description: "{{ doc('ingestion_source_file') }}"
+          - name: _loaded_at
+            description: "{{ doc('ingestion_loaded_at') }}"
+          - name: _run_id
+            description: "{{ doc('ingestion_run_id') }}"
